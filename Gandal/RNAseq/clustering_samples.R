@@ -6,6 +6,8 @@ library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; libra
 library(ConsensusClusterPlus)
 library(JADE) ; library(MineICA) ; library(moments) ; library(fdrtool)
 library(ClusterR)
+library(WGCNA)
+library(pdfCluster) ; library(gplots)
 
 ##### Load and transform data ###########################################################
 
@@ -90,14 +92,17 @@ cc_clusters[cc_clusters==2] = cc_output_c2[[best_k]]$consensusClass %>% sapply(f
 # Independent Component Analysis (www.journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1002367)
 # Run ICA with that same number of nbComp to then filter them:
 ICA_output = datExpr_redDim %>% runICA(nbComp=ncol(datExpr_redDim), method='JADE')
-#ICA_output = datExpr_redDim %>% as.matrix %>% clusterFastICARuns(nbComp=ncol(datExpr_redDim), 
-                              #alg.type='deflation', nbIt=10, funClus='hclust', method='average')
 # Select components with kurtosis > 3
 signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
 # Assign obs to genes with FDR<0.001 using the fdrtool package
 ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F)$qval<0.001) %>% data.frame
 # Remove clusters with zero or one elements
 ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
+
+ICA_clusters_min = rep(NA, nrow(ICA_clusters))
+ICA_clusters_names = colnames(ICA_clusters)
+for(c in ICA_clusters_names) ICA_clusters_min[ICA_clusters[,c]] = c
+
 
 ICA_clusters %>% rowSums %>% table
 
@@ -117,11 +122,11 @@ gmm_clusters = gmm$Log_likelihood %>% apply(1, which.max)
 
 gmm_points = rbind(datExpr_redDim, setNames(data.frame(gmm$centroids), names(datExpr_redDim)))
 gmm_labels = c(gmm_clusters, rep(NA, best_k)) %>% as.factor
-ggplotly(gmm_points %>% ggplot(aes(x=PC1, y=PC2, color=gmm_labels)) + geom_point() + theme_minimal())
+gmm_points %>% ggplot(aes(x=PC1, y=PC2, color=gmm_labels)) + geom_point() + theme_minimal()
 
 
-rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, 
-   signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, dend_meta)
+rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, ICA_clusters_names,
+   signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, dend_meta, best_power, c)
 
 ##### Plot cluterings ###################################################################
 
@@ -144,10 +149,6 @@ ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes
   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
 
-ICA_clusters_min = rep(NA, nrow(ICA_clusters))
-ICA_clusters_names = colnames(ICA_clusters)
-for(c in ICA_clusters_names) ICA_clusters_min[ICA_clusters[,c]] = c
-
 # All clusterings
 plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
                 mutate(ID = rownames(.), subject_ID = datMeta_redDim$Subject_ID,
@@ -169,13 +170,13 @@ create_3D_plot('cluster_hc') ; create_3D_plot('cluster_ica')
 create_3D_plot('diagnosis')  ; create_3D_plot('age')
 
 
-rm(create_2D_plot, create_3D_plot, ICA_clusters_names, c)
+rm(create_2D_plot, create_3D_plot, ICA_clusters_names)
 
 ##### Compare Clusterings ###############################################################
 
 # Adjusted Rand Index
 clusterings = list(km_clusters, hc_clusters, substr(cc_clusters,0,1), cc_clusters, ICA_clusters_min, 
-                   wgcna_clusters, gmm_clusters)
+                   wgcna_clusters, gmm_clusters, datMeta_redDim$Diagnosis_)
 cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
 for(i in 1:(length(clusterings))){
   cluster1 = clusterings[[i]]
@@ -184,7 +185,7 @@ for(i in 1:(length(clusterings))){
     cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
   }
 }
-colnames(cluster_sim) = c('K-means','Hierarchical','Consensus L1', 'Consensus', 'ICA', 'WGCNA', 'GMM')
+colnames(cluster_sim) = c('K-means','Hierarchical','Consensus L1', 'Consensus', 'ICA', 'WGCNA', 'GMM','ASD')
 rownames(cluster_sim) = colnames(cluster_sim)
 
 cluster_sim = cluster_sim %>% as.matrix %>% round(2)
@@ -285,6 +286,3 @@ enrichment_tests_ICA = function(signif_threshold=0.05){
 
 enrichment_results = rbind(enrichment_tests('cluster_km'), enrichment_tests('cluster_hc'), 
                            enrichment_tests('cluster_cc'), enrichment_tests_ICA())
-
-
-
