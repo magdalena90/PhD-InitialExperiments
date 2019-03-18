@@ -3,6 +3,7 @@
 setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq')
 
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(viridis)
 library(ConsensusClusterPlus)
 library(JADE) ; library(MineICA) ; library(moments) ; library(fdrtool)
 library(ClusterR)
@@ -58,21 +59,32 @@ datExpr_k_means = kmeans(datExpr_redDim, best_k, nstart=25)
 km_clusters = datExpr_k_means$cluster
 
 # Hierarchical Clustering
-h_clusts = datExpr_redDim %>% dist %>% hclust %>% as.dendrogram
-h_clusts %>% plot
-best_k = 6
-hc_clusters = cutree(h_clusts, best_k)
-
-dend_meta = datMeta_redDim[match(gsub('X','',labels(h_clusts)), rownames(datMeta_redDim)),] %>% 
-            mutate('Diagnosis' = ifelse(Diagnosis_=='CTL','#008080','#86b300'), # Blue control, Green ASD
-                   'Sex' = ifelse(Sex=='F','#ff6666','#008ae6'),                # Pink Female, Blue Male
-                   'Region' = case_when(Brain_lobe=='Frontal'~'#F8766D',        # ggplot defaults for 4 colours
-                                      Brain_lobe=='Temporal'~'#7CAE00',
-                                      Brain_lobe=='Parietal'~'#00BFC4',
-                                      Brain_lobe=='Occipital'~'#C77CFF')) %>%
-            dplyr::select(Region, Sex, Diagnosis)
-h_clusts %>% set('labels', rep('',nrow(datMeta_redDim))) %>% set('branches_k_color', k=best_k) %>% plot
-colored_bars(colors=dend_meta)
+  h_clusts = datExpr_redDim %>% dist %>% hclust %>% as.dendrogram
+  h_clusts %>% plot
+  best_k = 6
+  hc_clusters = cutree(h_clusts, best_k)
+  
+  create_viridis_dict = function(age){
+    min_age = datMeta_redDim$Age %>% min
+    max_age = datMeta_redDim$Age %>% max
+    viridis_age_cols = viridis(max_age - min_age + 1)
+    names(viridis_age_cols) = seq(min_age, max_age)
+    
+    return(viridis_age_cols)
+  }
+  viridis_age_cols = create_viridis_dict()
+  
+  dend_meta = datMeta_redDim[match(gsub('X','',labels(h_clusts)), rownames(datMeta_redDim)),] %>% 
+              mutate('Diagnosis' = ifelse(Diagnosis_=='CTL','#008080','#86b300'), # Blue control, Green ASD
+                     'Sex' = ifelse(Sex=='F','#ff6666','#008ae6'),                # Pink Female, Blue Male
+                     'Region' = case_when(Brain_lobe=='Frontal'~'#F8766D',        # ggplot defaults for 4 colours
+                                        Brain_lobe=='Temporal'~'#7CAE00',
+                                        Brain_lobe=='Parietal'~'#00BFC4',
+                                        Brain_lobe=='Occipital'~'#C77CFF'),
+                     'Age' = viridis_age_cols[as.character(Age)]) %>%            # Purple: young, Yellow: old
+              dplyr::select(Age, Region, Sex, Diagnosis)
+  h_clusts %>% set('labels', rep('', nrow(datMeta_redDim))) %>% set('branches_k_color', k=best_k) %>% plot
+  colored_bars(colors=dend_meta)
 
 # Consensus Clustering
 cc_output = datExpr_redDim %>% as.matrix %>% t %>% ConsensusClusterPlus(maxK=5, reps=50, seed=123) # 2
@@ -125,8 +137,9 @@ gmm_labels = c(gmm_clusters, rep(NA, best_k)) %>% as.factor
 gmm_points %>% ggplot(aes(x=PC1, y=PC2, color=gmm_labels)) + geom_point() + theme_minimal()
 
 
-rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, ICA_clusters_names,
-   signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, dend_meta, best_power, c)
+rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, 
+   ICA_clusters_names, signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, dend_meta, 
+   best_power, c, viridis_age_cols, create_viridis_dict)
 
 ##### Plot cluterings ###################################################################
 
