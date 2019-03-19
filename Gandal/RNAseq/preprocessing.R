@@ -1,6 +1,4 @@
 
-#1o_RNAseq_ASD_4region.R
-
 library(WGCNA); library(nlme); library(reshape); 
 library(ggplot2); library(corrplot); library(biomaRt); library(cqn); library(limma);
 library(sva) ; library(statmod)
@@ -9,8 +7,8 @@ options(stringsAsFactors = FALSE)
 theme_update(plot.title = element_text(hjust = 0.5))
 plot_pdf = FALSE
 
-#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/Gandal/RNAseq')
-setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq')
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq')
+#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq')
 
 ##### Load and normalise data ############################################################
 
@@ -123,14 +121,21 @@ if(plot_pdf) {
 mod = model.matrix(~ Dx, data=datMeta)
 corfit = duplicateCorrelation(datExpr, mod, block=datMeta$Subject_ID)
 lmfit = lmFit(datExpr, design=mod, block=datMeta$Subject_ID, correlation=corfit$consensus)
+
 fit = eBayes(lmfit, trend=T, robust=T)
-ASD_pvals = fit$p.value[,'DxASD']
+top_genes = topTable(fit, coef=2, number=nrow(datExpr))
+ASD_pvals = rownames(top_genes)[top_genes$adj.P.Val<0.05]
+length(ASD_pvals)/nrow(datExpr)*100 # keep 17% of genes (3385)
+datExpr = datExpr[match(ASD_pvals, rownames(datExpr)),]
 
-to_keep = ASD_pvals<0.05
-table(to_keep)/length(to_keep)*100 # keep 32% of genes
-datExpr = datExpr[to_keep,]
 
-save(file='./working_data/RNAseq_ASD_4region_DEgenes.Rdata', datMeta, datExpr, datProbes, datSeq)
+
+fit = treat(lmfit, trend=T, robust=T)
+top_genes = topTreat(fit, coef=2, number=nrow(datExpr))
+
+
+
+save(file='./working_data/RNAseq_ASD_4region_DEgenes_adj_pval.Rdata', datMeta, datExpr, datProbes, datSeq)
 
 ##### Quality control tests ##############################################################
 
