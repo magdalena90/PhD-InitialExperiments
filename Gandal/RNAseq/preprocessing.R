@@ -124,18 +124,16 @@ lmfit = lmFit(datExpr, design=mod, block=datMeta$Subject_ID, correlation=corfit$
 
 fit = eBayes(lmfit, trend=T, robust=T)
 top_genes = topTable(fit, coef=2, number=nrow(datExpr))
-ASD_pvals = rownames(top_genes)[top_genes$adj.P.Val<0.05]
-length(ASD_pvals)/nrow(datExpr)*100 # keep 17% of genes (3385)
-datExpr = datExpr[match(ASD_pvals, rownames(datExpr)),]
+ordered_top_genes = top_genes[match(rownames(datExpr), rownames(top_genes)),]
+
+ASD_pvals = rownames(ordered_top_genes)[ordered_top_genes$adj.P.Val<0.05]     # keep 17% of genes (3385)
+ASD_lfc = rownames(ordered_top_genes)[abs(ordered_top_genes$logFC)>log2(1.2)] # keep 33% of genes (7048)
+ASD_pvals_lfc = intersect(ASD_pvals, ASD_lfc)                                 # keep 14% of genes (2928)
+
+datExpr = datExpr[match(ASD_pvals_lfc, rownames(datExpr)),]
 
 
-
-fit = treat(lmfit, trend=T, robust=T)
-top_genes = topTreat(fit, coef=2, number=nrow(datExpr))
-
-
-
-save(file='./working_data/RNAseq_ASD_4region_DEgenes_adj_pval.Rdata', datMeta, datExpr, datProbes, datSeq)
+save(file='./working_data/RNAseq_ASD_4region_DEgenes_adj_pval_lfc.Rdata', datMeta, datExpr, datProbes, datSeq)
 
 ##### Quality control tests ##############################################################
 
