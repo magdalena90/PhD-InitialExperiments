@@ -1,7 +1,7 @@
 ---
 title: "Clustering Genes"
 # author: "Magdalena Navarro"
-date: "19 March 2019"
+date: "20 March 2019"
 output:
   html_document:
     code_folding: "hide"
@@ -99,6 +99,11 @@ datExpr_redDim = reduce_dim_output$datExpr
 pca_output = reduce_dim_output$pca_output
 
 rm(datSeq, datProbes, reduce_dim_datExpr, reduce_dim_output, datExpr)
+```
+
+Perhaps the first component is determined by a small number of samples and by removing them we can lower the variance explained by it:
+```{r}
+plot(sort(pca_output$rotation[,1], decreasing = TRUE))
 ```
 
 Genes are still separated into two clouds of points:
