@@ -23,12 +23,14 @@ setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gand
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
-library(RColorBrewer) ; library(viridis) ; require(gridExtra)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
+library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
 library(ConsensusClusterPlus)
 library(JADE) ; library(MineICA) ; library(moments) ; library(fdrtool)
 library(ClusterR)
 library(WGCNA)
 library(pdfCluster) ; library(gplots)
+library(biomaRt)
 
 # # FILTER DE GENES
 # load('./../working_data/RNAseq_ASD_4region_normalized.Rdata')
@@ -138,15 +140,62 @@ p2 = pca_data_projection %>% ggplot(aes(x=PC1, y=PC2, color=log_fold_change)) + 
   scale_colour_gradient2()
 grid.arrange(p1, p2, ncol=2)
 
-rm(mod, corfit, lmfit, fit, ASD_pvals, log_fold_change, top_genes, ordered_top_genes, datExpr, datProbes, datSeq, p1, p2)
+rm(keep, mod, corfit, lmfit, fit, ASD_pvals, log_fold_change, top_genes, ordered_top_genes, datExpr, datProbes, 
+   datSeq, p1, p2)
+```
+
+### SFARI genes dataset
+
+Only 165 of our 2928 genes appear on the SFARI list, losing all 25 genes with a score of 1
+```{r, warning=FALSE}
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv', 
+    col_types = cols(`number-of-reports` = col_integer(), syndromic = col_logical()))
+
+print('Gene Score count of all genes:')
+SFARI_genes$`gene-score` %>% table
+
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% mutate('gene-symbol'=hgnc_symbol) %>% 
+                   dplyr::select('ensembl_gene_id', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+gene_scores = SFARI_genes %>% dplyr::select(ensembl_gene_id, `gene-score`, syndromic) %>% 
+              right_join(gene_names, by='ensembl_gene_id') %>% dplyr::select(-'gene-symbol')
+
+# Full (ordered) list of datExpr genes with their scores
+gene_scores = data.frame('ensembl_gene_id'=rownames(datExpr_redDim)) %>% 
+              left_join(gene_scores, by = 'ensembl_gene_id') %>%
+              mutate('syndromic' = ifelse(syndromic==FALSE | is.na(syndromic), FALSE, TRUE),
+                     'gene-bool' = ifelse(is.na(`gene-score`), FALSE, TRUE))
+
+'Gene score count of genes in datExpr:'
+gene_scores$`gene-score` %>% table
+
+rm(SFARI_genes, mart, gene_names)
 ```
 
 ### Clustering
 
 ```{r}
 clusterings = list()
+
+clusterings[['SFARI_score']] = gene_scores$`gene-score`
+names(clusterings[['SFARI_score']]) = gene_scores$ensembl_gene_id
+
+clusterings[['SFARI_bool']] = gene_scores$`gene-bool`
+names(clusterings[['SFARI_bool']]) = gene_scores$ensembl_gene_id
+
+clusterings[['syndromic']] = gene_scores$syndromic
+names(clusterings[['syndromic']]) = gene_scores$ensembl_gene_id
 ```
+
 #### K-means Clustering
+
 ```{r}
 set.seed(123)
 wss = sapply(1:10, function(k) kmeans(datExpr_redDim, k, iter.max=100, nstart=25,
@@ -167,11 +216,32 @@ Clusters seem to be able to separate ASD and control samples pretty well and the
 
 Younger ASD samples seem to be more similar to control samples than older ASD samples (pink cluster has most of the youngest samples). The yellow cluster is made of young ASD samples.
 
-```{r}
+```{r, warning=FALSE, fig.width=12}
 h_clusts = datExpr_redDim %>% dist %>% hclust
-plot(h_clusts, hang = -1, cex = 0.6, labels=FALSE)
+# plot(h_clusts, hang = -1, cex = 0.6, labels=FALSE)
 best_k = 6
 clusterings[['hc']] = cutree(h_clusts, best_k)
+
+create_viridis_dict = function(){
+  min_score = clusterings[['SFARI_score']] %>% min(na.rm=TRUE)
+  max_score = clusterings[['SFARI_score']] %>% max(na.rm=TRUE)
+  viridis_score_cols = viridis(max_score - min_score + 1)
+  names(viridis_score_cols) = seq(min_score, max_score)
+  
+  return(viridis_score_cols)
+}
+
+viridis_score_cols = create_viridis_dict()
+
+dend_meta = gene_scores[match(labels(h_clusts), gene_scores$ensembl_gene_id),] %>% 
+            mutate('SFARI_score' = viridis_score_cols[`gene-score`],                   # Purple: 2, Yellow: 6
+                   'SFARI_bool' = ifelse(`gene-bool` == T, '#21908CFF', 'white'), # Acqua
+                   'Syndromic' = ifelse(syndromic == T, 'orange', 'white')) %>% 
+            dplyr::select(SFARI_score, SFARI_bool, Syndromic)
+
+h_clusts %>% as.dendrogram %>% set('labels', rep('', nrow(datMeta))) %>% 
+             set('branches_k_color', k=best_k) %>% plot
+colored_bars(colors=dend_meta)
 ```
 
 #### Consensus Clustering
@@ -223,13 +293,15 @@ ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
 clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
 ICA_clusters_names = colnames(ICA_clusters)
 for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+
+clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
 ```
 
 Leaves most of the observations (~80%) without a cluster (every time it leaves out more genes):
-```{r}
+```{r, fig.width=12}
 ICA_clusters %>% rowSums %>% table
 
-ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2,Var1)) + 
+ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2, Var1)) + 
   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
 ```
@@ -289,15 +361,18 @@ clusterings[['GMM_3']] %>% table
 
 Separate the two clouds of points by a straight line. There seems to be a difference in the mean expression of the genes between clusters but not in their standard deviation.
 ```{r}
+# Modify equation sign if needed so blue cluter represents overexpressed genes
 manual_clusters = as.factor(as.numeric(-0.1*datExpr_redDim$PC1 + 0.05 > datExpr_redDim$PC2))
 datExpr_redDim %>% ggplot(aes(x=PC1, y=PC2, color=manual_clusters)) + geom_point() + 
   geom_abline(slope=-0.1, intercept=0.05, color='gray') + theme_minimal()
 names(manual_clusters) = rownames(datExpr_redDim)
 
 clusterings[['Manual']] = manual_clusters
+
+clusterings[['Manual']] %>% table
 ```
 
-Cluster 2 has a bigger mean expression than cluster 1. There also seem to be more than one distributions in cluster 2, with two different means and three different standard deviations?
+Cluster 2 has a bigger mean expression than cluster 1. There also seem to be more than one distributions in cluster 2, with two different means and three different standard deviations.
 ```{r, fig.width = 12}
 manual_clusters_data = cbind(apply(datExpr_redDim, 1, mean), apply(datExpr_redDim, 1, sd), 
                              manual_clusters) %>% data.frame
@@ -310,33 +385,73 @@ p2 = manual_clusters_data %>% ggplot(aes(x=sd, color=cluster, fill=cluster)) +
 grid.arrange(p1, p2, ncol=2)
 ```
 
-Separating cluster 2 genes by their sd:
-```{r}
+Separating cluster 2 genes by their sd: It seems that the bigger the sd of the cluster the genes belong to, the bigger their (absolute) value is in the first PC component (blue samples are really close to 0, and the purple ones are between 10 and 20). The second PC also seems to play a small part on this.
+```{r, fig.width = 12}
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+n_clusters = 3
 c2_sd = manual_clusters_data %>% filter(cluster==2) %>% dplyr::select(sd)
 rownames(c2_sd) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='2']
-gmm_c2_sd = c2_sd %>% GMM(3)
+gmm_c2_sd = c2_sd %>% GMM(n_clusters)
 
-manual_clusters_data %>% ggplot(aes(x=sd)) +
-  stat_function(fun=dnorm, n=100, colour='#99cc00', # green
+clusterings[['Manual_sd']] = as.character(clusterings[['Manual']])
+clusterings[['Manual_sd']][clusterings[['Manual']]==1] = gmm_c2_sd$Log_likelihood %>% 
+  apply(1, function(x) glue('1_',which.max(x)))
+
+plot_gaussians = manual_clusters_data %>% ggplot(aes(x=sd)) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(n_clusters+1)[2], # green
                 args=list(mean=gmm_c2_sd$centroids[1], sd=gmm_c2_sd$covariance_matrices[1])) +
-  stat_function(fun=dnorm, n=100, colour='#2eb8b8', # acqua
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(n_clusters+1)[3], # acqua
                 args=list(mean=gmm_c2_sd$centroids[2], sd=gmm_c2_sd$covariance_matrices[2])) +
-  stat_function(fun=dnorm, n=100, colour='#a64dff', # purple
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(n_clusters+1)[4], # acqua
                 args=list(mean=gmm_c2_sd$centroids[3], sd=gmm_c2_sd$covariance_matrices[3])) +
   theme_minimal()
 
-clusterings[['Manual2']] = as.character(clusterings[['Manual']])
-clusterings[['Manual2']][clusterings[['Manual']]==1] = gmm_c2_sd$Log_likelihood %>% 
+plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_sd']]))) + 
+          geom_point() + theme_minimal()
+
+grid.arrange(plot_gaussians, plot_points, ncol=2)
+
+clusterings[['Manual_sd']] %>% table
+```
+
+Separating cluster 2 genes by their mean:
+```{r, fig.width = 12}
+n_clusters = 2
+
+c2_mean = manual_clusters_data %>% filter(cluster==2) %>% dplyr::select(mean)
+rownames(c2_mean) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='2']
+gmm_c2_mean= c2_mean %>% GMM(n_clusters)
+
+clusterings[['Manual_mean']] = as.character(clusterings[['Manual']])
+clusterings[['Manual_mean']][clusterings[['Manual']]==1] = gmm_c2_mean$Log_likelihood %>% 
   apply(1, function(x) glue('1_',which.max(x)))
 
-clusterings[['Manual2']] %>% table
+plot_gaussians = manual_clusters_data %>% ggplot(aes(x=mean)) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(n_clusters+1)[2], # green
+                args=list(mean=gmm_c2_mean$centroids[1], sd=gmm_c2_mean$covariance_matrices[1])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(n_clusters+1)[3], # blue
+                args=list(mean=gmm_c2_mean$centroids[2], sd=gmm_c2_mean$covariance_matrices[2])) +
+  theme_minimal()
+
+plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_mean']]))) + 
+          geom_point() + theme_minimal()
+
+grid.arrange(plot_gaussians, plot_points, ncol=2)
+
+clusterings[['Manual_mean']] %>% table
 ```
 
 ```{r, warning=FALSE}
 rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, 
    ICA_clusters_names, signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, 
-   best_power, c, manual_clusters, manual_clusters_data, c2_sd, gmm_c2_sd, p1, p2, 
-   pca_data_projection)
+   best_power, c, manual_clusters, manual_clusters_data, c2_sd, c2_mean, gmm_c2_sd, gmm_c2_mean,
+   p1, p2, pca_data_projection, dend_meta, plot_gaussians, plot_points, n_clusters, 
+   viridis_score_cols, gg_colour_hue, create_viridis_dict)
 ```
 
 ### Compare clusterings
@@ -346,7 +461,7 @@ Using Adjusted Rand Index:
 * Clusterings seem to give very different results and none resembles the manual separation
 
 * Simple methods give similar results (K-means, hierarchical clustering, consensus clustering)
-```{r}
+```{r, fig.width = 12}
 cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
 for(i in 1:(length(clusterings))){
   cluster1 = as.factor(clusterings[[i]])
@@ -369,13 +484,7 @@ rm(i, j, cluster1, cluster2, cluster_sim)
 
 ### Scatter plots
 
-```{r}
-create_2D_plot = function(cat_var){
- ggplotly(plot_points %>% ggplot(aes_string(x='PC1', y='PC2', color=cat_var)) + 
-          geom_point() + theme_minimal() + 
-          xlab(paste0('PC1 (', round(summary(pca_output)$importance[2,1]*100,2),'%)')) +
-          ylab(paste0('PC2 (', round(summary(pca_output)$importance[2,2]*100,2),'%)')))
-}
+```{r, fig.width = 12}
 create_3D_plot = function(cat_var){
   plot_points %>% plot_ly(x=~PC1, y=~PC2, z=~PC3) %>% add_markers(color=plot_points[,cat_var], size=1) %>% 
     layout(title = glue('Samples coloured by ', cat_var),
@@ -391,7 +500,12 @@ plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
                 n_ica_clust = as.factor(rowSums(ICA_clusters)),  gmm_clust = as.factor(clusterings[['GMM']]),
                 gmm_clust2 = as.factor(clusterings[['GMM_2']]),  gmm_clust3 = as.factor(clusterings[['GMM_3']]),
                 wgcna_clust = as.factor(clusterings[['WGCNA']]), manual_clust=as.factor(clusterings[['Manual']]),
-                manual2_clust=as.factor(clusterings[['Manual2']]))
+                manual2_clust = as.factor(clusterings[['Manual_mean']]),
+                manual3_clust = as.factor(clusterings[['Manual_sd']]),
+                SFARI_clust = as.factor(clusterings[['SFARI_score']]),
+                SFARI_bool = as.factor(clusterings[['SFARI_bool']]),
+                syndromic = as.factor(clusterings[['syndromic']]))
+
 ```
 
 #### 2D plots of clusterings
@@ -403,17 +517,10 @@ plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
 * WGCNA creates clusters inverted between clouds
 
 * Manual classification + GMM by standard deviation clusters make sense
+
+* SFARI genes seem to be everywhere
 ```{r, warning=FALSE}
-create_2D_plot('km_clust')
-create_2D_plot('hc_clust')
-create_2D_plot('cc_l1_clust')
-create_2D_plot('cc_clust')
-create_2D_plot('ica_clust')
-create_2D_plot('gmm_clust')
-create_2D_plot('gmm_clust2')
-create_2D_plot('gmm_clust3')
-create_2D_plot('wgcna_clust')
-create_2D_plot('manual2_clust')
+selectable_scatter_plot(plot_points, plot_points)
 ```
 
 #### 3D plots

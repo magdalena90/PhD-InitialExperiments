@@ -145,7 +145,7 @@ h_clusts = datExpr_redDim %>% dist %>% hclust %>% as.dendrogram
 best_k = 6
 clusterings[['hc']] = cutree(h_clusts, best_k)
 
-create_viridis_dict = function(age){
+create_viridis_dict = function(){
   min_age = datMeta_redDim$Age %>% min
   max_age = datMeta_redDim$Age %>% max
   viridis_age_cols = viridis(max_age - min_age + 1)
