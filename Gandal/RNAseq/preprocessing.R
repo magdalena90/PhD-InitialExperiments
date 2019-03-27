@@ -67,7 +67,7 @@ if(!file.exists('./working_data/RNAseq_ASD_4region_normalized.Rdata')) {
                 lengthMethod = c('smooth'),
                 sqn = FALSE)  # Run cqn with specified depths and with no quantile normalization
   cqn.dat = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalized FPKM) values
-  datExpr.preCQN = datExpr
+  datExpr.preCQN = datExpr    # This is never used
   datExpr = cqn.dat
   
   # Filter out genes with low counts (keep genes with value>1 at least 50% of times)
