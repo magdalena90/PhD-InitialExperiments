@@ -10,8 +10,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, include=FALSE}
-#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
-setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
@@ -59,9 +59,8 @@ rm(to_keep, datSeq, datProbes)
 
 ## Experiment 1: Changes in PCA plots for different filtering thresholds
 
-lfc=-1 means no filtering at all, the rest of the filterings include an adjusted p-value lower than 0.05
+lfc=-1 means no filtering at all, the rest of the filterings include on top of the defined lfc, an adjusted p-value lower than 0.05.
 
-**Note:** PC values get smaller as Log2 fold change increases, so on each iterations the values were scaled so it would be easier to compare between frames
 ```{r}
 lfc_list = c(seq(0, 1.3, 0.1), seq(1.35, 1.7, 0.05))
 
@@ -133,6 +132,8 @@ rm(datExpr_pca_genes, datExpr_pca_samps, DE_genes, datExpr_DE, pca_genes_new, pc
 ```
 
 ### Samples
+
+**Note:** PC values get smaller as Log2 fold change increases, so on each iteration the values were scaled so it would be easier to compare between frames
 
 #### Coloured by Diagnosis:
 ```{r, warning=FALSE}

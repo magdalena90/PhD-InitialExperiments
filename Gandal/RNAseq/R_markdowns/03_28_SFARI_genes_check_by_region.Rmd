@@ -1,0 +1,188 @@
+---
+title: "SFARI genes expression check by region"
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+# setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+
+library(limma);
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
+library(biomaRt) ; library(cqn) ; library(DESeq2)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:n-1], 'gray')
+}
+```
+
+Load raw data, annotate probes using biomaRt and load SFARI genes
+```{r, message=FALSE}
+# Load csvs
+datExpr = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+datMeta = read.csv('./../raw_data/RNAseq_ASD_datMeta.csv')
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
+
+# Make sure datExpr and datMeta columns/rows match
+rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
+if(!all(colnames(datExpr) == rownames(datMeta))){
+  print('Columns in datExpr don\'t match the rowd in datMeta!')
+}
+
+# Annotate probes
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+datProbes$length = datProbes$end_position-datProbes$start_position
+
+# Group brain regions by lobes
+datMeta$Brain_Region = as.factor(datMeta$Region)
+datMeta$Brain_lobe = 'Occipital'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA4_6', 'BA9', 'BA24', 'BA44_45')] = 'Frontal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA3_1_2_5', 'BA7')] = 'Parietal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA41_42_22')] = 'Temporal'
+datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
+
+#################################################################################
+# FILTERS:
+
+# 1 Filter probes with start or end position missing (filter 5)
+# These can be filtered without probe info, they have weird IDS that don't start with ENS
+to_keep = !is.na(datProbes$length)
+datProbes = datProbes[to_keep,]
+datExpr = datExpr[to_keep,]
+rownames(datProbes) = datProbes$ensembl_gene_id
+
+# 3. Filter samples from ID AN03345 (filter 2)
+to_keep = (datMeta$Subject_ID != 'AN03345')
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+#################################################################################
+# Annotate SFARI genes
+
+# Get ensemble IDS for SFARI genes
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                   mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                   dplyr::select('ID', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+datExpr_backup = datExpr
+
+print('SFARI genes count by score')
+table(SFARI_genes$`gene-score`)
+
+print('Samples count by lobe')
+table(datMeta$Brain_lobe)
+
+rm(getinfo, to_keep, gene_names, mart)
+```
+
+#### Boxplots of difference in mean between diagnosis by score for raw data
+
+* **Regions:** Frontal, Temporal, Parietal and Occipital
+
+* y axis cut at 1000 to remove outliers
+
+* The distributions by score seem very similar between regions
+
+```{r, fig.width = 12, warning=FALSE}
+make_ASD_vs_CTL_df = function(datExpr, lobe){
+  datMeta_lobe = datMeta %>% filter(Brain_lobe==lobe & rownames(datMeta) %in% colnames(datExpr))
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta_lobe$Diagnosis_=='ASD'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta_lobe$Diagnosis_!='ASD'))
+  
+  ASD_vs_CTL = data.frame('ID'=as.character(rownames(datExpr)),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+  
+  return(ASD_vs_CTL)
+}
+
+p = list()
+for(lobe in names(table(datMeta$Brain_lobe))){
+  datExpr_lobe = datExpr %>% dplyr::select(which(datMeta$Brain_lobe==lobe))
+  ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_lobe, lobe)
+  plot = ggplotly(ggplot(ASD_vs_CTL, aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
+                  geom_boxplot() + theme_minimal() + ylim(0, 1000) +
+                  scale_fill_manual(values=gg_colour_hue(7)) +
+                  theme(legend.position = 'none'))
+  p[lobe] = list(plot)
+}
+
+subplot(p[[1]], p[[2]], p[[3]], p[[4]], nrows=2)
+
+rm(p, lobe, datExpr_lobe)
+```
+
+### Normalise data using cqn (conditional quantile normalisation) and filter genes with low counts
+
+```{r}
+datExpr = datExpr_backup # Should be the same, but in case code is ran in different order...
+
+# Conditional Quantile Normalisation (CQN)
+cqn.dat = cqn(datExpr, lengths = datProbes$length,
+              x = datProbes$percentage_gc_content,
+              lengthMethod = 'smooth',
+              sqn = FALSE)  # Run cqn with specified depths and with no quantile normalisation
+datExpr = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalised RPKM) values
+
+# Filter out genes with low counts (filter 43406)
+pres = apply(datExpr>1, 1, sum) 
+to_keep = pres > 0.5 * ncol(datExpr)
+datExpr = datExpr[to_keep,]
+
+datExpr_post_Norm = datExpr %>% data.frame
+
+rm(cqn.dat, pres, to_keep)
+```
+
+#### Boxplots for normalised data
+
+* **Regions:** Frontal, Temporal, Parietal and Occipital
+
+* Similar behaviour in all regions
+
+```{r, fig.width = 12, warning=FALSE}
+datExpr = datExpr_post_Norm # Should be equal, jut in case
+
+p = list()
+for(lobe in names(table(datMeta$Brain_lobe))){
+  datExpr_lobe = datExpr %>% dplyr::select(which(datMeta$Brain_lobe==lobe))
+  ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_lobe, lobe)
+  plot = ggplotly(ggplot(ASD_vs_CTL, aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
+                  geom_boxplot() + theme_minimal() + 
+                  scale_fill_manual(values=gg_colour_hue(7)) +
+                  theme(legend.position = 'none'))
+  p[lobe] = list(plot)
+}
+
+subplot(p[[1]], p[[2]], p[[3]], p[[4]], nrows=2)
+
+rm(p, datExpr_lobe, ASD_vs_CTL, plot)
+```
+
+
+

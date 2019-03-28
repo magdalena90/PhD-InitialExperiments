@@ -10,8 +10,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, include=FALSE}
-#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
-setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+# setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
@@ -100,24 +100,24 @@ ggplotly(genes_DE_info %>% ggplot(aes(`gene-score`, abs(logFC), fill=`gene-score
 ***
 #### Perhaps there was an error in the calculation of the differential expression?
 
-### Comparing expression density between top and least DE genes
+<!-- ### Comparing expression density between top and least DE genes -->
 
-Looks OK...
-```{r, fig.width = 12}
-top_gene_id = genes_DE_info$ID[which.max(abs(genes_DE_info$logFC))]
-bottom_gene_id = genes_DE_info$ID[which.min(abs(genes_DE_info$logFC))]
-top_bottom_gene_expr = data.frame('Expr_top'=datExpr[rownames(datExpr)==top_gene_id,], 
-                                  'Expr_bottom'=datExpr[rownames(datExpr)==bottom_gene_id,],
-                                  'Diagnosis'=datMeta$Diagnosis)
-p1 = top_bottom_gene_expr %>% ggplot(aes(Expr_bottom, color=Diagnosis, fill=Diagnosis)) + 
-                                     geom_density(alpha=0.4) + theme_minimal()
-p2 = top_bottom_gene_expr %>% ggplot(aes(Expr_top, color=Diagnosis, fill=Diagnosis)) + 
-                                     geom_density(alpha=0.4) + theme_minimal()
+<!-- Looks OK... -->
+<!-- ```{r, fig.width = 12} -->
+<!-- top_gene_id = genes_DE_info$ID[which.max(abs(genes_DE_info$logFC))] -->
+<!-- bottom_gene_id = genes_DE_info$ID[which.min(abs(genes_DE_info$logFC))] -->
+<!-- top_bottom_gene_expr = data.frame('Expr_top'=datExpr[rownames(datExpr)==top_gene_id,],  -->
+<!--                                   'Expr_bottom'=datExpr[rownames(datExpr)==bottom_gene_id,], -->
+<!--                                   'Diagnosis'=datMeta$Diagnosis) -->
+<!-- p1 = top_bottom_gene_expr %>% ggplot(aes(Expr_bottom, color=Diagnosis, fill=Diagnosis)) +  -->
+<!--                                      geom_density(alpha=0.4) + theme_minimal() -->
+<!-- p2 = top_bottom_gene_expr %>% ggplot(aes(Expr_top, color=Diagnosis, fill=Diagnosis)) +  -->
+<!--                                      geom_density(alpha=0.4) + theme_minimal() -->
 
-grid.arrange(p1, p2, ncol=2)
+<!-- grid.arrange(p1, p2, ncol=2) -->
 
-rm(top_gene_id, bottom_gene_id, top_bottom_gene_expr, p1, p2)
-```
+<!-- rm(top_gene_id, bottom_gene_id, top_bottom_gene_expr, p1, p2) -->
+<!-- ``` -->
 
 ### Comparing expression levels between different scores
 
@@ -184,7 +184,9 @@ SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
 
 # Make sure datExpr and datMeta columns/rows match
 rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
-all(colnames(datExpr) == rownames(datMeta))
+if(!all(colnames(datExpr) == rownames(datMeta))){
+  print('Columnd in datExpr don\'t match the rowd in datMeta!')
+}
 
 # Annotate probes
 getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
@@ -200,7 +202,7 @@ datProbes$length = datProbes$end_position-datProbes$start_position
 # FILTERS:
 
 # 1 Filter probes with start or end position missing (filter 5)
-# They can be filtered without probe info, they have weird IDS that don't start with ENS
+# These can be filtered without probe info, they have weird IDS that don't start with ENS
 to_keep = !is.na(datProbes$length)
 datProbes = datProbes[to_keep,]
 datExpr = datExpr[to_keep,]
@@ -220,8 +222,9 @@ mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
                host='feb2014.archive.ensembl.org') ## Gencode v19
 
 gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
-                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% mutate('gene-symbol'=hgnc_symbol) %>% 
-                   dplyr::select('ensembl_gene_id', 'gene-symbol')
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                   mutate('gene-symbol'=hgnc_symbol, 'ID'=as.factor(ensembl_gene_id)) %>% 
+                   dplyr::select('ID', 'gene-symbol')
 
 SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
 
@@ -235,20 +238,6 @@ rm(getinfo, to_keep, gene_names, mart)
 * Score 1 has the highest median, all scores have higher median than the rest of the genes
 
 ```{r, warning=FALSE}
-make_ASD_vs_CTL_df = function(datExpr){
-  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
-  
-  ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-               left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-               dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-               mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
-  
-  return(ASD_vs_CTL)
-}
 
 ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
@@ -272,10 +261,12 @@ ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-scor
 Now both the median and the 3rd quantile of the genes with score 1 and 2 are below the general median of the data without score
 
 ```{r}
-datExpr = datExpr_backup # Should be the same, but just in case
+datExpr = datExpr_backup # Should be the same, but in case code is ran in different order...
 
 # Check datProbes and datExpr have same rows
-all(rownames(datExpr) == rownames(datProbes))
+if(!all(rownames(datExpr) == rownames(datProbes))){
+  print('Rows in datExpr don\'t match the ones in datProbes!')
+}
 
 # Conditional Quantile Normalisation (CQN)
 cqn.dat = cqn(datExpr, lengths = datProbes$length,
@@ -283,12 +274,6 @@ cqn.dat = cqn(datExpr, lengths = datProbes$length,
               lengthMethod = 'smooth',
               sqn = FALSE)  # Run cqn with specified depths and with no quantile normalisation
 datExpr = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalised RPKM) values
-
-# # Filter out genes with low counts (filter 43406)
-# pres = apply(datExpr>1, 1, sum) 
-# to_keep = pres > 0.5 * ncol(datExpr)
-# datExpr = datExpr[to_keep,]
-
 ```
 
 #### Boxplot of difference in mean between diagnosis by score
@@ -408,6 +393,10 @@ pres = apply(datExpr>1, 1, sum)
 to_keep = pres > 0.5 * ncol(datExpr)
 datExpr = datExpr[to_keep,]
 
+
+save(file='./../working_data/RNAseq_ASD_4region_normalized_vst.Rdata', datMeta, datExpr, datProbes)
+
+rm(vst_output, pres, to_keep)
 ```
 
 #### Boxplot of difference in mean between diagnosis by score
@@ -425,23 +414,28 @@ ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-scor
 ### Compare expression densities for Score 1 genes before and after normalisation (cqn normalisation)
 
 Before:
-```{r}
+
+* Filtering the genes without a score because their distribution is so concentrated around a small region close to zero that you couldn't see the other distributions
+```{r, message=FALSE}
 ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_backup)
 
-ggplotly(ASD_vs_CTL %>% ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
-                        geom_density(alpha=0.3) + theme_minimal() + 
-                        scale_fill_manual(values=gg_colour_hue(7)) + 
-                        scale_color_manual(values=gg_colour_hue(7)))
+ggp = ggplotly(ASD_vs_CTL %>% filter(`gene-score`!='None') %>% 
+               ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
+                      geom_density(alpha=0.3) + theme_minimal() + 
+                      scale_fill_manual(values=gg_colour_hue(7)) + 
+                      scale_color_manual(values=gg_colour_hue(7)))
+rangeslider(ggp, start=0, end=6000)
 ```
 
 After:
-```{r}
+```{r, message=FALSE, warning=FALSE}
 ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_post_Norm)
 
-ggplotly(ASD_vs_CTL %>% ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
-                        geom_density(alpha=0.3) + theme_minimal() + 
-                        scale_fill_manual(values=gg_colour_hue(7)) + 
-                        scale_color_manual(values=gg_colour_hue(7)))
+ggp = ggplotly(ASD_vs_CTL %>% ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
+               geom_density(alpha=0.3) + theme_minimal() + 
+               scale_fill_manual(values=gg_colour_hue(7)) + 
+               scale_color_manual(values=gg_colour_hue(7)))
+rangeslider(ggp, start=0, end=3)
 ```
 <!-- Boxplots for a randomly selected gene from each score -->
 <!-- ```{r, fig.width = 12} -->
