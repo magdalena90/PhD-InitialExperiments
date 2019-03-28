@@ -10,8 +10,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, include=FALSE}
-setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
-#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)

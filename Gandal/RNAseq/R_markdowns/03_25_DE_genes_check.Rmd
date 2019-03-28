@@ -10,13 +10,12 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, include=FALSE}
-setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
-#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
 library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
-library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
 library(biomaRt) ; library(cqn) ; library(DESeq2)
 
 gg_colour_hue = function(n) {
@@ -70,14 +69,14 @@ Genes with an autism score don't seem to have better behaviour than the rest of 
 
 * None of the genes with score=1 have an adjusted p-value lower than 0.05, so they are all lost when filtering the data (!)
 
-* Only a subset of 1/3 of the original number of genes without score is plotted so the plot is not that havy
+* Only a subset of 1/4 of the original number of genes without score is plotted so the plot is not that havy
 ```{r, warning=FALSE}
 genes_DE_info = genes_DE_info %>% mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
 
 # Create subsample of genes without score so plot is not that heavy
 genes_DE_info_score = genes_DE_info %>% filter(`gene-score`!='None')
 genes_DE_info_sample = genes_DE_info %>% filter(`gene-score`=='None') %>% 
-  sample_frac(0.5) %>% bind_rows(genes_DE_info_score)
+  sample_frac(0.25) %>% bind_rows(genes_DE_info_score)
 
 ggp = ggplotly(genes_DE_info_sample %>% ggplot(aes(adj.P.Val, logFC, color=`gene-score`)) + 
                geom_point(aes(ids=ID, alpha=`gene-score`)) + scale_alpha_discrete(range=c(1, 0.2)) + 
@@ -126,23 +125,28 @@ rm(top_gene_id, bottom_gene_id, top_bottom_gene_expr, p1, p2)
 
 Same as with the boxplots for log fold change
 ```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+make_ASD_vs_CTL_df = function(datExpr){
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+  
+  ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+  
+  return(ASD_vs_CTL)
+}
 
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>% 
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(genes_DE_info, by='ID') %>% 
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`)
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
 ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + geom_boxplot() +
                scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal()
 
 # ASD_vs_CTL %>% ggplot(aes(`gene-score`, sd_diff, fill=`gene-score`)) + geom_boxplot() +
 #               scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal()
-
-rm(datExpr_ASD, datExpr_CTL)
 ```
 
 #### Density plot of the average difference in mean between diagnosis by score
@@ -230,27 +234,45 @@ rm(getinfo, to_keep, gene_names, mart)
 
 * Score 1 has the highest median, all scores have higher median than the rest of the genes
 
-* Many outliers (have to use zoom to see the boxes)
 ```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+make_ASD_vs_CTL_df = function(datExpr){
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+  
+  ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
+               dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+  
+  return(ASD_vs_CTL)
+}
 
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-             mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
 ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
          geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
 ```
 
-### Perform Quantile Normalisation
+### Applying log2 transformation to the unnormalised data
+
+Genes labeled with Score 1 and 2 are the most affected, now their medians are just above the median of the genes without a score, as well as their 3rd quantile. (Does this make sense? Log2 is a monotonic transformation, why would it affect different distributions in a non monotonic way?)
+
+```{r, warning=FALSE}
+ASD_vs_CTL = make_ASD_vs_CTL_df(log2(datExpr_backup+1))
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
+         geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
+```
+
+### Performing Quantile Normalisation
+
+Now both the median and the 3rd quantile of the genes with score 1 and 2 are below the general median of the data without score
 
 ```{r}
-datExpr = datExpr_backup
+datExpr = datExpr_backup # Should be the same, but just in case
 
 # Check datProbes and datExpr have same rows
 all(rownames(datExpr) == rownames(datProbes))
@@ -262,71 +284,74 @@ cqn.dat = cqn(datExpr, lengths = datProbes$length,
               sqn = FALSE)  # Run cqn with specified depths and with no quantile normalisation
 datExpr = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalised RPKM) values
 
+# # Filter out genes with low counts (filter 43406)
+# pres = apply(datExpr>1, 1, sum) 
+# to_keep = pres > 0.5 * ncol(datExpr)
+# datExpr = datExpr[to_keep,]
+
+```
+
+#### Boxplot of difference in mean between diagnosis by score
+
+Scores 1 and 2 now have the same median as the genes without score and a lower 3rd quantile
+
+```{r, warning=FALSE}
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
+         geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
+```
+
+### Filtering genes with low counts
+
+```{r}
 # Filter out genes with low counts (filter 43406)
 pres = apply(datExpr>1, 1, sum) 
 to_keep = pres > 0.5 * ncol(datExpr)
 datExpr = datExpr[to_keep,]
+
+datExpr_post_Norm = datExpr
 ```
 
 #### Boxplot of difference in mean between diagnosis by score
 
-**Scores 1 and 2 have the lowest median!!!**
-
+Genes with score 1 and 2 now have lower medians and 3rd quantiles than the genes withouth a score
 ```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
-
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-             mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
 ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
          geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
 ```
+<!-- #### Perform Quantile Normalisation with sqn=TRUE  -->
 
-#### Perform Quantile Normalisation with sqn=TRUE 
+<!-- The cqn documentation says this TRUE default should only be changed by expert users, perhaps they weren't expert users... -->
 
-The cqn documentation says this TRUE default should only be changed by expert users, perhaps they weren't expert users...
+<!-- ```{r, message=FALSE, warning=FALSE} -->
+<!-- datExpr = datExpr_backup -->
 
-```{r}
-datExpr = datExpr_backup
+<!-- # Check datProbes and datExpr have same rows -->
+<!-- # all(rownames(datExpr) == rownames(datProbes)) -->
 
-# Check datProbes and datExpr have same rows
-all(rownames(datExpr) == rownames(datProbes))
+<!-- # Conditional Quantile Normalisation (CQN) -->
+<!-- cqn.dat = cqn(datExpr, lengths=datProbes$length ,x=datProbes$percentage_gc_content) -->
+<!-- datExpr = cqn.dat$y + cqn.dat$offset -->
 
-# Conditional Quantile Normalisation (CQN)
-cqn.dat = cqn(datExpr, lengths=datProbes$length ,x=datProbes$percentage_gc_content)
-datExpr = cqn.dat$y + cqn.dat$offset
+<!-- # Filter out genes with low counts (filter 43601) -->
+<!-- pres = apply(datExpr>1, 1, sum)  -->
+<!-- to_keep = pres > 0.5 * ncol(datExpr) -->
+<!-- datExpr = datExpr[to_keep,] -->
+<!-- ``` -->
 
-# Filter out genes with low counts (filter 43601)
-pres = apply(datExpr>1, 1, sum) 
-to_keep = pres > 0.5 * ncol(datExpr)
-datExpr = datExpr[to_keep,]
-```
+<!-- #### Boxplot of difference in mean between diagnosis by score -->
 
-#### Boxplot of difference in mean between diagnosis by score
+<!-- Doesn't seem to make much of a difference, if anything, it makes it worse -->
 
-Doesn't seem to make much of a difference, if anything, it makes it worse
+<!-- ```{r, warning=FALSE} -->
+<!-- ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr) -->
 
-```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
-
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-             mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
-
-ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
-         geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
-```
+<!-- ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) +  -->
+<!--          geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal()) -->
+<!-- ``` -->
 
 ***
 #### Other Normalisation techniques?
@@ -348,9 +373,9 @@ dds = DESeqDataSet(se, design =~Diagnosis_+Region)
 #Estimate size factors
 dds = estimateSizeFactors(dds)
 
-#Plot column sums according to size factor
-plot(sizeFactors(dds), colSums(counts(dds)))
-abline(lm(colSums(counts(dds)) ~ sizeFactors(dds) + 0))
+# Plot column sums according to size factor
+# plot(sizeFactors(dds), colSums(counts(dds)))
+# abline(lm(colSums(counts(dds)) ~ sizeFactors(dds) + 0))
 
 datExpr = log2(counts(dds, normalized=TRUE) + 1)
 
@@ -365,16 +390,7 @@ datExpr = datExpr[to_keep,]
 Same result as before ... 
 
 ```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
-
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-             mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
 ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
          geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
@@ -396,24 +412,37 @@ datExpr = datExpr[to_keep,]
 
 #### Boxplot of difference in mean between diagnosis by score
 
-Same result as before ... 
+A bit better, at least the median and 3rd quantiles of genes with score are higher than genes without a score, but the distinction was better before performing the log2 transformation
 
 ```{r, warning=FALSE}
-datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
-datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
-
-ASD_vs_CTL = data.frame('ID'=rownames(datExpr),
-                        'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
-                        'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
-             mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
-             left_join(SFARI_genes, by=c('ID'='ensembl_gene_id')) %>%
-             dplyr::select(ID, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
-             mutate('gene-score'=ifelse(is.na(`gene-score`),'None',`gene-score`))
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
 
 ggplotly(ASD_vs_CTL %>% ggplot(aes(`gene-score`, abs(mean_diff), fill=`gene-score`)) + 
          geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
 ```
 
+***
+### Compare expression densities for Score 1 genes before and after normalisation (cqn normalisation)
+
+Before:
+```{r}
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_backup)
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
+                        geom_density(alpha=0.3) + theme_minimal() + 
+                        scale_fill_manual(values=gg_colour_hue(7)) + 
+                        scale_color_manual(values=gg_colour_hue(7)))
+```
+
+After:
+```{r}
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_post_Norm)
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(abs(mean_diff), color=`gene-score`, fill=`gene-score`)) + 
+                        geom_density(alpha=0.3) + theme_minimal() + 
+                        scale_fill_manual(values=gg_colour_hue(7)) + 
+                        scale_color_manual(values=gg_colour_hue(7)))
+```
 <!-- Boxplots for a randomly selected gene from each score -->
 <!-- ```{r, fig.width = 12} -->
 <!-- expr_score_samples =c() -->
