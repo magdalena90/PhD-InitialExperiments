@@ -1,5 +1,5 @@
 ---
-title: "Filtering comparisons for Raw data"
+title: "Filtering comparisons for raw data"
 output:
   html_document:
     code_folding: 'hide'
@@ -25,10 +25,10 @@ gg_colour_hue = function(n) {
 }
 ```
 
-Load raw data, annotate probes using biomaRt and load SFARI genes
-
-Filtering genes that are not expressed in any of the samples
 ```{r, message=FALSE}
+#################################################################################
+# Load raw data, annotate probes using biomaRt and load SFARI genes
+
 # Load csvs
 datExpr = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
 datMeta = read.csv('./../raw_data/RNAseq_ASD_datMeta.csv')
@@ -37,7 +37,7 @@ SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
 # Make sure datExpr and datMeta columns/rows match
 rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
 if(!all(colnames(datExpr) == rownames(datMeta))){
-  print('Columns in datExpr don\'t match the rowd in datMeta!')
+  print('Columns in datExpr don\'t match the rows in datMeta!')
 }
 
 # Make data transformation in datMeta
@@ -53,25 +53,12 @@ datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA
 datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
 datMeta$RIN[is.na(datMeta$RIN)] = mean(datMeta$RIN, na.rm=T)
 
-# Annotate probes
-getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
-            'end_position','strand','band','gene_biotype','percentage_gc_content')
-mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
-               dataset='hsapiens_gene_ensembl',
-               host='feb2014.archive.ensembl.org') ## Gencode v19
-datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
-datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
-datProbes$length = datProbes$end_position-datProbes$start_position
-
 #################################################################################
 # FILTERS:
 
-# 1 Filter probes with start or end position missing (filter 5)
-# These can be filtered without probe info, they have weird IDS that don't start with ENS
-to_keep = !is.na(datProbes$length)
-datProbes = datProbes[to_keep,]
+# 1 Filter probes without a regular ensemble ID (filter 5)
+to_keep = datExpr %>% rownames %>% startsWith('ENS')
 datExpr = datExpr[to_keep,]
-rownames(datProbes) = datProbes$ensembl_gene_id
 
 # 2. Filter samples from ID AN03345 (filter 2)
 to_keep = (datMeta$Subject_ID != 'AN03345')
@@ -80,7 +67,6 @@ datExpr = datExpr[,to_keep]
 
 # 3. Filter genes with zeros in all their entries (filter 13795)
 to_keep = rowSums(datExpr)>0
-datProbes = datProbes[to_keep,]
 datExpr = datExpr[to_keep,]
 
 #################################################################################
@@ -98,18 +84,30 @@ gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hg
 
 SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
 
+
 datExpr_backup = datExpr
 
-print('SFARI genes count by score')
-table(SFARI_genes$`gene-score`)
 
-print('Samples count by lobe')
-table(datMeta$Brain_lobe)
-
-rm(getinfo, to_keep, gene_names, mart)
+rm(to_keep, gene_names, mart)
 ```
 
-Calculate/Load Differential Expression metrics for all genes, load SFARI dataset
+Number of genes:
+```{r}
+nrow(datExpr)
+```
+
+Gene count by SFARI score:
+```{r}
+table(SFARI_genes$`gene-score`)
+```
+
+Gene count by brain lobe:
+```{r}
+table(datMeta$Brain_lobe)
+```
+
+
+Calculate/Load Differential Expression metrics for all genes
 ```{r, warning=FALSE, message=FALSE}
 if(!file.exists('./../working_data/genes_ASD_DE_info_raw.csv')) {
   
@@ -131,9 +129,20 @@ genes_DE_info = read_csv('./../working_data/genes_ASD_DE_info_raw.csv')
 }
 
 genes_DE_info = genes_DE_info %>% dplyr::select(ID, logFC, AveExpr, t, P.Value, adj.P.Val, 
-                                                B, status, `gene-score`, syndromic)
+                                                B, status, `gene-score`, syndromic) %>%
+                mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
 
 rm(datSeq, datProbes)
+```
+
+### Boxplot of logFC by score
+
+* Score 1 has the highest quartiles of all distributions
+
+* Genes without a SFARI score have the lowest quartiles of all by far
+```{r}
+ggplotly(genes_DE_info %>% ggplot(aes(`gene-score`, abs(logFC), fill=`gene-score`)) + 
+         geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
 ```
 
 ## Changes in PCA plots for different filtering thresholds

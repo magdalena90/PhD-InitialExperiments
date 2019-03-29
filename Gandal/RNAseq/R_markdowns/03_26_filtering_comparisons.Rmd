@@ -1,5 +1,5 @@
 ---
-title: 'Filtering Comparisons'
+title: 'Filtering comparisons for cqn data'
 output:
   html_document:
     code_folding: 'hide'
@@ -17,10 +17,16 @@ library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
 library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
 library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:n-1], 'gray')
+}
 ```
 
-Calculate/load Differential Expression metrics for all genes, load SFARI dataset
 ```{r, message=FALSE}
+#################################################################################
+# Calculate/load Differential Expression metrics for all genes, load SFARI dataset
+
 # Gene expression data
 load('./../working_data/RNAseq_ASD_4region_normalized.Rdata')
 
@@ -54,10 +60,37 @@ if(!file.exists('./../working_data/genes_ASD_DE_info.csv')) {
 genes_DE_info = read_csv('./../working_data/genes_ASD_DE_info.csv')
 }
 
+genes_DE_info = genes_DE_info %>% dplyr::select(ID, logFC, AveExpr, t, P.Value, adj.P.Val, 
+                                                B, `gene-score`, syndromic) %>%
+                mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+
 rm(to_keep, datSeq, datProbes)
 ```
 
-## Experiment 1: Changes in PCA plots for different filtering thresholds
+Number of genes:
+```{r}
+nrow(datExpr)
+```
+
+Gene count by SFARI score:
+```{r}
+table(SFARI_genes$`gene-score`)
+```
+
+Gene count by brain lobe:
+```{r}
+table(datMeta$Brain_lobe)
+```
+
+### Boxplot of logFC by score
+
+Genes with scores 2 and 3 have lower quartiles than genes without a score
+```{r}
+ggplotly(genes_DE_info %>% ggplot(aes(`gene-score`, abs(logFC), fill=`gene-score`)) + 
+         geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + theme_minimal())
+```
+
+## Changes in PCA plots for different filtering thresholds
 
 lfc=-1 means no filtering at all, the rest of the filterings include on top of the defined lfc, an adjusted p-value lower than 0.05.
 
@@ -167,11 +200,6 @@ ggplotly(pcas_sfari_genes %>% ggplot(aes(PC1, PC2, color=score)) +
 ```
 
 ```{r}
-gg_colour_hue = function(n) {
-  hues = seq(15, 375, length = n)
-  pal = c(hcl(h = hues, l = 65, c = 100)[1:n-1], 'gray')
-}
-
 # Calculate percentage of genes remaining on each lfc by each score
 score_count_by_lfc = pcas_genes %>% filter(!is.na(score)) %>% group_by(lfc, score) %>% tally %>% ungroup
 score_count_pcnt = score_count_by_lfc %>% filter(lfc==-1) %>% mutate('n_init'=n) %>%
@@ -227,19 +255,3 @@ ggplotly(syndromic_count_by_lfc %>% ggplot(aes(lfc, pcnt, color=score)) + geom_p
 ggplotly(pcas_genes %>% ggplot(aes(PC1, PC2)) + geom_point(aes(frame=lfc, ids=ID, alpha=0.3)) + 
          theme_minimal() + ggtitle('Genes PCA plot modifying filtering threshold'))
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

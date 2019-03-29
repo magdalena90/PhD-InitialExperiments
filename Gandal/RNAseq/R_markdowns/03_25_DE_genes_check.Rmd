@@ -208,7 +208,7 @@ datProbes = datProbes[to_keep,]
 datExpr = datExpr[to_keep,]
 rownames(datProbes) = datProbes$ensembl_gene_id
 
-# 3. Filter samples from ID AN03345 (filter 2)
+# 2. Filter samples from ID AN03345 (filter 2)
 to_keep = (datMeta$Subject_ID != 'AN03345')
 datMeta = datMeta[to_keep,]
 datExpr = datExpr[,to_keep]
