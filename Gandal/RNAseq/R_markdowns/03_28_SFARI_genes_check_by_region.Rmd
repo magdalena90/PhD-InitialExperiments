@@ -15,7 +15,7 @@ setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gand
 
 library(limma);
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
-library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
 library(biomaRt) ; library(cqn) ; library(DESeq2)
 
 gg_colour_hue = function(n) {
@@ -87,13 +87,27 @@ SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
 
 datExpr_backup = datExpr
 
-print('SFARI genes count by score')
-table(SFARI_genes$`gene-score`)
-
-print('Samples count by lobe')
-table(datMeta$Brain_lobe)
-
 rm(getinfo, to_keep, gene_names, mart)
+```
+
+Number of genes:
+```{r}
+nrow(datExpr)
+```
+
+Gene count by SFARI score:
+```{r}
+table(SFARI_genes$`gene-score`)
+```
+
+Gene count by brain lobe:
+```{r}
+table(datMeta$Brain_lobe)
+```
+
+Gene count by SFARIscore and brain lobe:
+```{r}
+t(table(datMeta$Brain_lobe, datMeta$Diagnosis_))
 ```
 
 #### Boxplots of difference in mean between diagnosis by score for raw data
@@ -134,29 +148,62 @@ for(lobe in names(table(datMeta$Brain_lobe))){
 
 subplot(p[[1]], p[[2]], p[[3]], p[[4]], nrows=2)
 
-rm(p, lobe, datExpr_lobe)
+rm(p, lobe, datExpr_lobe, plot)
 ```
 
-### Normalise data using cqn (conditional quantile normalisation) and filter genes with low counts
+<!-- ### Normalise data using cqn (conditional quantile normalisation) and filter genes with low counts -->
 
+<!-- ```{r} -->
+<!-- datExpr = datExpr_backup # Should be the same, but in case code is ran in different order... -->
+
+<!-- # Conditional Quantile Normalisation (CQN) -->
+<!-- cqn.dat = cqn(datExpr, lengths = datProbes$length, -->
+<!--               x = datProbes$percentage_gc_content, -->
+<!--               lengthMethod = 'smooth', -->
+<!--               sqn = FALSE)  # Run cqn with specified depths and with no quantile normalisation -->
+<!-- datExpr = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalised RPKM) values -->
+
+<!-- # Filter out genes with low counts (filter 43406) -->
+<!-- pres = apply(datExpr>1, 1, sum)  -->
+<!-- to_keep = pres > 0.5 * ncol(datExpr) -->
+<!-- datExpr = datExpr[to_keep,] -->
+
+<!-- datExpr_post_Norm = datExpr %>% data.frame -->
+
+<!-- rm(cqn.dat, pres, to_keep) -->
+<!-- ``` -->
+
+### Normalise data using vst
 ```{r}
-datExpr = datExpr_backup # Should be the same, but in case code is ran in different order...
+datExpr = datExpr_backup # Just in case
 
-# Conditional Quantile Normalisation (CQN)
-cqn.dat = cqn(datExpr, lengths = datProbes$length,
-              x = datProbes$percentage_gc_content,
-              lengthMethod = 'smooth',
-              sqn = FALSE)  # Run cqn with specified depths and with no quantile normalisation
-datExpr = cqn.dat$y + cqn.dat$offset  # Get the log2(Normalised RPKM) values
+counts = as.matrix(datExpr)
+rowRanges = GRanges(datProbes$chromosome_name,
+                    IRanges(datProbes$start_position, width=datProbes$length),
+                    strand=datProbes$strand,
+                    feature_id=datProbes$ensembl_gene_id)
 
-# Filter out genes with low counts (filter 43406)
-pres = apply(datExpr>1, 1, sum) 
-to_keep = pres > 0.5 * ncol(datExpr)
+se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+dds = DESeqDataSet(se, design =~Diagnosis_+Region)
+
+#Estimate size factors
+dds = estimateSizeFactors(dds)
+
+vst_output = vst(dds)
+datExpr = assay(vst_output)
+
+# Filter out genes with 0 variance (filter 19659)
+to_keep = apply(datExpr, 1, sd)>0.1
 datExpr = datExpr[to_keep,]
 
-datExpr_post_Norm = datExpr %>% data.frame
+# Filter out genes with mean < 3 (filter 13547)
+to_keep = rowMeans(datExpr)>3.3
+datExpr = datExpr[to_keep,] %>% data.frame
 
-rm(cqn.dat, pres, to_keep)
+datExpr_post_Norm = datExpr
+
+
+rm(counts, rowRanges, se, dds, vst_output, to_keep)
 ```
 
 #### Boxplots for normalised data
@@ -184,5 +231,255 @@ subplot(p[[1]], p[[2]], p[[3]], p[[4]], nrows=2)
 rm(p, datExpr_lobe, ASD_vs_CTL, plot)
 ```
 
+#### Calculate DE by region
+
+Seems like the Parietal lobe is the only one with a significant number of DE genes
+
+```{r}
+DE_by_region = function(datExpr, datMeta){
+  
+  mod = model.matrix(~ Diagnosis_, data=datMeta)
+  corfit = duplicateCorrelation(datExpr, mod, block=datMeta$Subject_ID)
+  lmfit = lmFit(datExpr, design=mod, correlation=corfit$consensus)
+  
+  fit = eBayes(lmfit, trend=T, robust=T)
+  top_genes = topTable(fit, coef=2, number=nrow(datExpr))
+  DE_info = top_genes[match(rownames(datExpr), rownames(top_genes)),]  
+  
+}
+
+DE_info_by_region = list()
+i=1
+for(lobe in names(table(datMeta$Brain_lobe))){
+  datExpr_lobe = datExpr %>% dplyr::select(which(datMeta$Brain_lobe==lobe))
+  datMeta_lobe = datMeta %>% filter(Brain_lobe==lobe)
+  DE_info = DE_by_region(datExpr_lobe, datMeta_lobe) %>% mutate('ID'=rownames(datExpr_lobe))
+  
+  DE_info_by_region[[i]] = DE_info
+  i = i+1
+  
+  print(glue(lobe,' lobe: ', sum(DE_info$adj.P.Val<0.05 & DE_info$logFC>log2(1.2)),
+             ' DE genes'))
+}
+
+names(DE_info_by_region) = names(table(datMeta$Brain_lobe))
+
+rm(i, lobe, datExpr_lobe, datMeta_lobe, DE_info)
+```
+
+#### Perform PCA for the Parietal lobe
+
+##### Keeping all genes
+
+PC1 explains the average expression and PC2 log fold change
+```{r}
+reduce_dim_datExpr = function(datExpr, datMeta, var_explained=0.95){
+
+  datExpr_pca = prcomp(datExpr, scale=TRUE)
+  last_pc = data.frame(summary(datExpr_pca)$importance[3,]) %>% rownames_to_column(var='ID') %>% 
+            filter(.[[2]] >= var_explained) %>% top_n(-1, ID)
+  
+  print(glue('Keeping top ', substr(last_pc$ID, 3, nchar(last_pc$ID)), ' components that explain ',
+             var_explained*100, '% of the variance'))
+  
+  datExpr_top_pc = datExpr_pca$x %>% data.frame %>% dplyr::select(PC1:last_pc$ID)
+  
+  return(list('datExpr'=datExpr_top_pc, 'pca_output'=datExpr_pca))
+}
+
+lobe = 'Parietal'
+datExpr_lobe = datExpr %>% dplyr::select(which(datMeta$Brain_lobe==lobe))
+datMeta_lobe = datMeta %>% filter(Brain_lobe==lobe)
+red_dim = reduce_dim_datExpr(datExpr_lobe, datMeta_lobe, 0.97)
+
+pca_lobe = red_dim$datExpr %>% mutate('ID' = DE_info_by_region[[lobe]]$ID) %>%
+           left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, PC1, PC2, `gene-score`) %>%
+           mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+           left_join(DE_info_by_region[[lobe]], by='ID') %>% mutate('abs_lFC'=abs(logFC))
+
+selectable_scatter_plot(pca_lobe[,-1], pca_lobe[,-1])
+
+# ggplotly(pca_lobe %>% ggplot(aes(PC1, PC2, fill=`gene-score`, color=`gene-score`)) + 
+#          geom_point(alpha=0.5) + theme_minimal() + ggtitle(lobe) +
+#          scale_fill_manual(values=gg_colour_hue(7)) +
+#          scale_color_manual(values=gg_colour_hue(7)))
+```
+
+## Changes in PCA plots for different filtering thresholds for Parietal samples
+
+lfc=-1 means no filtering at all, the rest of the filterings include on top of the defined lfc, an adjusted p-value lower than 0.05
+
+```{r, warning=FALSE, message=FALSE}
+lfc_list = c(seq(0, 2, 0.05))
+
+n_genes = nrow(datExpr_lobe)
+
+# Calculate PCAs
+datExpr_pca_samps = datExpr_lobe %>% data.frame %>% t %>% prcomp(scale.=TRUE)
+datExpr_pca_genes = datExpr_lobe %>% data.frame %>% prcomp(scale.=TRUE)
+
+# Initialice DF to save PCA outputs
+pcas_samps = datExpr_pca_samps$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+             mutate('ID'=colnames(datExpr_lobe), 'lfc'=-1, PC1=scale(PC1), PC2=scale(PC2))
+pcas_genes = datExpr_pca_genes$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+             mutate('ID'=rownames(datExpr_lobe), 'lfc'=-1, PC1=scale(PC1), PC2=scale(PC2))
+
+pca_samps_old = pcas_samps
+pca_genes_old = pcas_genes
+
+for(lfc in lfc_list){
+  
+  # Filter DE genes with iteration's criteria
+  DE_genes = DE_info_by_region[[lobe]] %>% filter(adj.P.Val<0.05 & abs(logFC)>lfc)
+  datExpr_DE = datExpr_lobe %>% data.frame %>% filter(rownames(.) %in% DE_genes$ID)
+  n_genes = c(n_genes, nrow(DE_genes))
+  
+  # Calculate PCAs
+  datExpr_pca_samps = datExpr_DE %>% t %>% prcomp(scale.=TRUE)
+  datExpr_pca_genes = datExpr_DE %>% prcomp(scale.=TRUE)
+
+  # Create new DF entries
+  pca_samps_new = datExpr_pca_samps$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+                  mutate('ID'=colnames(datExpr_lobe), 'lfc'=lfc, PC1=scale(PC1), PC2=scale(PC2))
+  pca_genes_new = datExpr_pca_genes$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+                  mutate('ID'=DE_genes$ID, 'lfc'=lfc, PC1=scale(PC1), PC2=scale(PC2))  
+  
+  # Change PC sign if necessary
+  if(cor(pca_samps_new$PC1, pca_samps_old$PC1)<0) pca_samps_new$PC1 = -pca_samps_new$PC1
+  if(cor(pca_samps_new$PC2, pca_samps_old$PC2)<0) pca_samps_new$PC2 = -pca_samps_new$PC2
+  if(cor(pca_genes_new$PC1, pca_genes_old[pca_genes_old$ID %in% pca_genes_new$ID,]$PC1 )<0){
+    pca_genes_new$PC1 = -pca_genes_new$PC1
+  }
+  if(cor(pca_genes_new$PC2, pca_genes_old[pca_genes_old$ID %in% pca_genes_new$ID,]$PC2 )<0){
+    pca_genes_new$PC2 = -pca_genes_new$PC2
+  }
+  
+  pca_samps_old = pca_samps_new
+  pca_genes_old = pca_genes_new
+  
+  # Update DFs
+  pcas_samps = rbind(pcas_samps, pca_samps_new)
+  pcas_genes = rbind(pcas_genes, pca_genes_new)
+  
+}
+
+# Add Diagnosis/SFARI score information
+pcas_samps = pcas_samps %>% mutate('ID'=substring(ID,2)) %>% 
+             left_join(datMeta_lobe, by=c('ID'='Dissected_Sample_ID')) %>%
+             dplyr::select(ID, PC1, PC2, lfc, Diagnosis_, Brain_lobe)
+pcas_genes = pcas_genes %>% left_join(SFARI_genes, by='ID') %>% 
+             mutate('score'=as.factor(`gene-score`)) %>%
+             dplyr::select(ID, PC1, PC2, lfc, score)
+
+# Plot change of number of genes
+ggplotly(data.frame('lfc'=lfc_list, 'n_genes'=n_genes[-1]) %>% ggplot(aes(x=lfc, y=n_genes)) + 
+         geom_point() + geom_line() + theme_minimal() + 
+         ggtitle('Number of remaining genes when modifying filtering threshold'))
+
+  
+rm(datExpr_pca_genes, datExpr_pca_samps, DE_genes, datExpr_DE, pca_genes_new, pca_samps_new, 
+   pca_genes_old, pca_samps_old, lfc_list, lfc)
+```
+
+### Samples
+
+**Note:** PC values get smaller as Log2 fold change increases, so on each iteration the values were scaled so it would be easier to compare between frames
+
+#### Coloured by Diagnosis:
+
+```{r, warning=FALSE}
+ggplotly(pcas_samps %>% ggplot(aes(PC1, PC2, color=Diagnosis_)) + geom_point(aes(frame=lfc, ids=ID)) + 
+         theme_minimal() + ggtitle('Samples PCA plot modifying filtering threshold'))
+```
+
+### Genes
+
+#### SFARI genes coloured by score
+```{r, warning=FALSE}
+pcas_sfari_genes = pcas_genes %>% filter(!is.na(score)) %>% dplyr::select(-'score')
+
+complete_sfari_df = expand.grid(unique(pcas_sfari_genes$ID), unique(pcas_sfari_genes$lfc))
+colnames(complete_sfari_df) = c('ID', 'lfc')
+
+pcas_sfari_genes = pcas_sfari_genes %>% right_join(complete_sfari_df, by=c('ID','lfc')) %>% 
+                   left_join(SFARI_genes, by='ID') %>% 
+                   mutate('score'=as.factor(`gene-score`), 'syndromic'=as.factor(syndromic))
+pcas_sfari_genes[is.na(pcas_sfari_genes)] = 0 # Fix for ghost points
+  
+ggplotly(pcas_sfari_genes %>% ggplot(aes(PC1, PC2, color=score)) + 
+         geom_point(aes(frame=lfc, ids=ID), alpha=0.6) + theme_minimal() + 
+         ggtitle('Genes PCA plot modifying filtering threshold'))
+```
 
 
+```{r}
+table(SFARI_genes$`gene-score`[SFARI_genes$ID %in% DE_info_by_region[[lobe]]$ID[DE_info_by_region[[lobe]]$adj.P.Val<0.05]])
+```
+
+```{r}
+# Calculate percentage of genes remaining on each lfc by each score
+score_count_by_lfc = pcas_genes %>% filter(!is.na(score)) %>% group_by(lfc, score) %>% tally %>% ungroup
+score_count_pcnt = score_count_by_lfc %>% filter(lfc==-1) %>% mutate('n_init'=n) %>%
+                   dplyr::select(score, n_init) %>% right_join(score_count_by_lfc, by='score') %>%
+                   mutate('pcnt'=round(n/n_init*100, 2)) %>% filter(lfc!=-1)
+
+# Complete missing entries with zeros
+complete_score_count_pcnt = expand.grid(unique(score_count_pcnt$lfc), unique(score_count_pcnt$score))
+colnames(complete_score_count_pcnt) = c('lfc', 'score')
+score_count_pcnt = full_join(score_count_pcnt, complete_score_count_pcnt, by=c('lfc','score')) %>%
+                   dplyr::select(score, lfc, n, pcnt)
+score_count_pcnt[is.na(score_count_pcnt)] = 0
+
+# Join counts by score and all genes
+all_count_pcnt = pcas_genes %>% group_by(lfc) %>% tally  %>% filter(lfc!=-1) %>% 
+                 mutate('pcnt'=round(n/nrow(datExpr)*100, 2), 'score'='All')
+score_count_pcnt = rbind(score_count_pcnt, all_count_pcnt)
+
+ggplotly(score_count_pcnt %>% ggplot(aes(lfc, pcnt, color=score)) + geom_point() + geom_line() + 
+         scale_colour_manual(palette=gg_colour_hue) + theme_minimal() + 
+         ggtitle('% of points left after each increase in log2 fold change'))
+
+rm(score_count_by_lfc, complete_score_count_pcnt)
+```
+
+#### All genes together
+```{r, warning=FALSE}
+ggplotly(pcas_genes %>% ggplot(aes(PC1, PC2)) + geom_point(aes(frame=lfc, ids=ID, alpha=0.3)) + 
+         theme_minimal() + ggtitle('Genes PCA plot modifying filtering threshold'))
+```
+
+#### PCA for DE genes
+
+Using adjusted p-value < 0.05 and logFC>log2(1.2)
+```{r}
+DE_genes = DE_info_by_region[[lobe]] %>% filter(adj.P.Val<0.05 & abs(logFC)>log2(1.2))
+datExpr_DE = datExpr_lobe %>% data.frame %>% filter(rownames(.) %in% DE_genes$ID)
+
+datExpr_pca_genes = datExpr_DE %>% data.frame %>% prcomp(scale.=TRUE)
+pca_genes = datExpr_pca_genes$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+            mutate('ID'=DE_genes$ID, PC1=PC1, PC2=PC2)
+
+pca_genes = pca_genes %>% left_join(SFARI_genes, by='ID') %>% 
+             mutate('score'=as.factor(`gene-score`)) %>%
+             dplyr::select(ID, PC1, PC2, score)
+
+manual_clusters = as.factor(as.numeric(0.07*pca_genes$PC1 > pca_genes$PC2))
+pca_genes %>% ggplot(aes(PC1, PC2, color=manual_clusters)) + geom_point() + 
+  geom_abline(slope=0.07, intercept=0, color='gray') + theme_minimal()
+
+rm(DE_genes, datExpr_pca_genes)
+```
+
+```{r, fig.width=12}
+manual_clusters_data = cbind(apply(datExpr_DE, 1, mean), apply(datExpr_DE, 1, sd), 
+                             manual_clusters) %>% data.frame
+colnames(manual_clusters_data) = c('mean','sd','cluster')
+manual_clusters_data = manual_clusters_data %>% mutate('cluster'=as.factor(cluster))
+
+p1 = manual_clusters_data %>% ggplot(aes(x=mean, color=cluster, fill=cluster)) + 
+  geom_density(alpha=0.4) + theme_minimal()
+p2 = manual_clusters_data %>% ggplot(aes(x=sd, color=cluster, fill=cluster)) + 
+  geom_density(alpha=0.4) + theme_minimal()
+
+grid.arrange(p1, p2, ncol=2)
+```
