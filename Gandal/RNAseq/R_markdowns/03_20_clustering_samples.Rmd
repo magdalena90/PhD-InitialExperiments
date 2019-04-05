@@ -109,6 +109,7 @@ rm(datSeq, datProbes, reduce_dim_datExpr, reduce_dim_output, datExpr, datMeta)
 ```{r}
 clusterings = list()
 ```
+
 #### K-means Clustering
 No recognisable best k, so chose k=5
 ```{r}

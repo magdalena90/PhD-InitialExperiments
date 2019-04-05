@@ -513,6 +513,8 @@ rm(i, j, cluster1, cluster2, cluster_sim)
 * WGCNA doesn't work well (classifies almost everything as a single class)
 
 * SFARI genes seem to be everywhere (perhaps a bit more concentrated in the top right?)
+
+* 1st PC seems to reflect the average level of expression of the genes
 ```{r}
 plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
               mutate(ID = rownames(.),                               k_means = as.factor(clusterings[['km']]),
@@ -529,5 +531,3 @@ plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
 ```{r, warning=FALSE, fig.width = 12}
 selectable_scatter_plot(plot_points, plot_points)
 ```
-
-
