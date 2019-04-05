@@ -79,7 +79,7 @@ reduce_dim_datExpr = function(datExpr, datMeta, var_explained=0.98){
   
   datExpr_pca = prcomp(datExpr, scale.=TRUE)
   last_pc = data.frame(summary(datExpr_pca)$importance[3,]) %>% rownames_to_column(var='ID') %>% 
-    filter(.[[2]] >= var_explained) %>% top_n(-1, ID)
+    filter(.[[2]] >= var_explained) %>% top_n(-1) %>% dplyr::select(ID)
   
   par(mfrow=c(1,2))
   plot(summary(datExpr_pca)$importance[2,], type='b')
@@ -297,7 +297,7 @@ for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
 clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
 ```
 
-Leaves most of the observations (~80%) without a cluster (every time it leaves out more genes):
+Leaves most of the observations (~80%) without a cluster:
 ```{r, fig.width=12}
 ICA_clusters %>% rowSums %>% table
 
@@ -308,16 +308,16 @@ ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes
 
 #### WGCNA
 
-best_power=56 but blockwiseModules only accepts powers up to 30, so 30 was used instead
+The best power is ~52, taking 30
 
 ```{r, warning=FALSE}
-best_power = datExpr_redDim %>% t %>% pickSoftThreshold(powerVector = seq(20, 60, by=2))
+best_power = datExpr_redDim %>% t %>% pickSoftThreshold(powerVector = seq(1, 10, by=1))
 network = datExpr_redDim %>% t %>% blockwiseModules(power=30, numericLabels=TRUE)
 clusterings[['WGCNA']] = network$colors
 names(clusterings[['WGCNA']]) = rownames(datExpr_redDim)
 ```
 
-It leaves 304 genes without a cluster:
+It leaves many genes without a cluster:
 ```{r}
 clusterings[['WGCNA']] %>% table
 ```
