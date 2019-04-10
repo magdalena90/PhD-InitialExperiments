@@ -1,0 +1,164 @@
+---
+title: 'Mean expr ASD vs CTL'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+
+library(limma);
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
+library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
+library(biomaRt)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:n-1], 'gray')
+}
+```
+
+```{r, message=FALSE}
+# Calculate/load Differential Expression metrics for all genes, load SFARI dataset:
+
+# Gene expression data
+load('./../working_data/RNAseq_ASD_4region_normalized_vst.Rdata')
+
+# SFARI genes
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
+SFARI_genes = SFARI_genes %>% inner_join(datProbes, by=c('gene-symbol'='external_gene_id')) %>%
+              mutate('ID' = ensembl_gene_id) %>%
+              dplyr::select(ID, `gene-score`, syndromic)
+
+# Balance Groups by covariates, remove singular batches (none)
+to_keep = (datMeta$Subject_ID != 'AN03345')
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+  
+if(!file.exists('./../working_data/genes_ASD_DE_info_vst.csv')) {
+  
+  # Calculate differential expression for ASD
+  mod = model.matrix(~ Dx, data=datMeta)
+  corfit = duplicateCorrelation(datExpr, mod, block=datMeta$Subject_ID)
+  lmfit = lmFit(datExpr, design=mod, block=datMeta$Subject_ID, correlation=corfit$consensus)
+  
+  fit = eBayes(lmfit, trend=T, robust=T)
+  top_genes = topTable(fit, coef=2, number=nrow(datExpr))
+  genes_DE_info = top_genes[match(rownames(datExpr), rownames(top_genes)),] %>%
+                  mutate('ID'=rownames(datExpr)) %>% left_join(SFARI_genes, by='ID')
+  
+  write_csv(genes_DE_info, path='./../working_data/genes_ASD_DE_info_vst.csv')
+  
+  rm(mod, corfit, lmfit, fit, top_genes)
+} else {
+genes_DE_info = read_csv('./../working_data/genes_ASD_DE_info_vst.csv')
+}
+
+genes_DE_info = genes_DE_info %>% dplyr::select(ID, logFC, AveExpr, t, P.Value, adj.P.Val, 
+                                                B, `gene-score`, syndromic) %>%
+                mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+
+
+datExpr = datExpr %>% data.frame
+datExpr_backup = datExpr
+
+
+rm(to_keep, datProbes)
+```
+
+### Raw data
+
+##### ASD samples seem to have higher gene expression consistently for all genes (~2)
+```{r, warning=FALSE, message=FALSE, fig.width=10}
+datExpr_raw = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+datExpr_raw = datExpr_raw[substr(rownames(datExpr_raw),1,3)=='ENS',
+                          substring(colnames(datExpr_raw),2) %in% datMeta$Dissected_Sample_ID]
+datExpr_raw = datExpr_raw[rowSums(datExpr_raw)>5,]
+
+asd_samples = as.numeric(datMeta$Diagnosis_=='ASD')
+ctl_samples = as.numeric(!asd_samples)
+
+asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr_raw)),
+                          'ASD_mean' = apply(datExpr_raw, 1, function(x) mean(x*asd_samples)),
+                          'CTL_mean' = apply(datExpr_raw, 1, function(x) mean(x*(ctl_samples)))) %>%
+              left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+
+p1 = ggplotly(asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
+              scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + geom_point(alpha=0.4) + 
+              geom_smooth(method=lm, se=FALSE, color='gray') +
+              ggtitle('Mean expression by gene ASD vs CTL') + theme_minimal())
+
+p2 = ggplotly(asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
+              ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + 
+                     coord_cartesian(ylim = c(0, 280)) + theme_minimal())
+
+subplot(p1, p2, nrows=1)
+
+remove(p1, p2, asd_ctl_mean)
+```
+
+### VST normalised data
+
+##### ASD samples seem to have higher gene expression consistently for all genes (~1.5)
+```{r, warning=FALSE, message=FALSE, fig.width=10}
+
+asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr)),
+                          'ASD_mean' = apply(datExpr, 1, function(x) mean(x*asd_samples)),
+                          'CTL_mean' = apply(datExpr, 1, function(x) mean(x*(ctl_samples)))) %>%
+              left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+
+p1 = ggplotly(asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
+              geom_point(alpha=0.4) + geom_smooth(method=lm, se=FALSE, color='gray') + 
+              ggtitle('Mean expression by gene ASD vs CTL') + theme_minimal())
+
+p2 = ggplotly(asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
+     ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal())
+
+subplot(p1, p2, nrows=1)
+
+remove(p1, p2, asd_ctl_mean)
+```
+
+### By Brain Region
+
+```{r, warning=FALSE, message=FALSE, fig.width=12, fig.height=15}
+
+scatter_plot_by_lobe = function(lobe){
+  
+  lobe_samples = as.numeric(datMeta$Brain_lobe==lobe)
+  
+  asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr)),
+                            'ASD_mean' = apply(datExpr, 1, function(x) mean(x*asd_samples*lobe_samples)),
+                            'CTL_mean' = apply(datExpr, 1, function(x) mean(x*(ctl_samples*lobe_samples)))) %>%
+                left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+  
+  p1 = asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
+                geom_point(alpha=0.4) + geom_smooth(method=lm, se=FALSE, color='gray') + 
+                ggtitle(glue(lobe,' Lobe')) + theme_minimal()
+  
+  p2 = asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
+     ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal()
+  
+  return(list(p1,p2))
+}
+
+ps = list()
+for(lobe in unique(datMeta$Brain_lobe)){
+  ps[[lobe]] = scatter_plot_by_lobe(lobe)
+}
+
+require(grid.arrange)
+grid.arrange(ps[['Frontal']][[1]],   ps[['Frontal']][[2]],
+             ps[['Temporal']][[1]],  ps[['Temporal']][[2]],
+             ps[['Parietal']][[1]],  ps[['Parietal']][[2]],
+             ps[['Occipital']][[1]], ps[['Occipital']][[2]], nrow=4)
+
+```
+

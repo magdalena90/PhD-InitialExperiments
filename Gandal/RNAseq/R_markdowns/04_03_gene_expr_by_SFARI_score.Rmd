@@ -1,5 +1,5 @@
 ---
-title: "Gene expression by SFARI score"
+title: 'Gene expression by SFARI score'
 output:
   html_document:
     code_folding: 'hide'
@@ -20,12 +20,12 @@ library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
 library(biomaRt)
 
 gg_colour_hue = function(n) {
-  hues = seq(15, 375, length = n)
-  pal = c(hcl(h = hues, l = 65, c = 100)[1:n-1], 'gray')
+  hues = seq(15, 375, length = n-1)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-2)], 'gray','#808080')
 }
 ```
 
-```{r, message=FALSE}
+```{r, message=FALSE, warning=FALSE}
 #################################################################################
 # Load raw data, annotate probes using biomaRt and load SFARI genes
 
@@ -86,13 +86,28 @@ SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol') %>%
               distinct(ID, .keep_all = TRUE)
 
 #################################################################################
+# Add functional annotation to genes from GO
+
+GO_annotations = read.csv('./../working_data/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+#################################################################################
+# Load genes DE info
+
 genes_DE_info = read.csv('./../working_data/genes_ASD_DE_info_raw.csv')
 genes_DE_info = genes_DE_info %>% filter(ID %in% rownames(datExpr)) %>% 
   mutate(gene.score=ifelse(is.na(gene.score), 'None', gene.score)) %>%
-  distinct(ID, .keep_all = TRUE)
+  distinct(ID, .keep_all = TRUE) %>% left_join(GO_neuronal, by='ID') %>%
+  mutate(Neuronal=ifelse(is.na(Neuronal), 0, Neuronal)) %>%
+  mutate(gene.score=ifelse(gene.score=='None' & Neuronal==1, 'Neuronal', gene.score))
 
-rm(to_keep, mart, gene_names)
+
+rm(to_keep, mart, gene_names, GO_annotations)
 ```
+
 
 Number of genes:
 ```{r}
@@ -101,24 +116,35 @@ nrow(datExpr)
 
 Gene count by SFARI score:
 ```{r}
-table(SFARI_genes$`gene-score`)
+table(genes_DE_info$gene.score)
+```
+
+GO Annotations:
+```{r}
+print(glue(nrow(GO_neuronal$ID), ' genes have neuronal-related annotations.'))
+
+print(glue(sum(SFARI_genes$ID %in% GO_neuronal$ID),' of these genes have a SFARI score.'))
+
+table(genes_DE_info$Neuronal[genes_DE_info$gene.score %in% c('1','2','3','4','5','6')],
+      genes_DE_info$gene.score[genes_DE_info$gene.score %in% c('1','2','3','4','5','6')])
 ```
 
 ### Weird behaviour:
 
 Logarithmic transformation of the data seems the invert the behaviour of genes by SFARI score
-```{r, fig.width=12}
+```{r, fig.width=10}
 p1 = ggplotly(genes_DE_info %>% ggplot(aes(x=gene.score, y=abs(logFC), fill=gene.score)) + 
-                geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+                geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
                 theme_minimal() + theme(legend.position = 'none'))
 
 genes_DE_info_log2 = read.csv('./../working_data/genes_ASD_DE_info_raw_log2.csv')
 genes_DE_info_log2 = genes_DE_info_log2 %>% filter(ID %in% rownames(datExpr)) %>% 
   mutate(gene.score=ifelse(is.na(gene.score), 'None', gene.score)) %>%
-  distinct(ID, .keep_all = TRUE)
+  distinct(ID, .keep_all = TRUE) %>%
+  mutate(gene.score=ifelse(gene.score=='None' & ID %in% GO_neuronal$ID, 'Neuronal', gene.score))
 
 p2 = ggplotly(genes_DE_info_log2 %>% ggplot(aes(x=gene.score, y=abs(logFC), fill=gene.score)) + 
-                geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+                geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
                 theme_minimal() + theme(legend.position = 'none') + 
                 ggtitle('logFC before and after log2 transformation'))
 
@@ -132,24 +158,22 @@ rm(p1, p2)
 Higher gene expression values are more affected by logarithmic transformation, and since genes with score 1 have the highest expressions, they are the most affected by the transformation.
 
 Also, there seems to be a relation between gene expression levels and their variation.
-```{r, fig.width=12, warning=FALSE, message=FALSE}
+```{r, fig.width=10, warning=FALSE, message=FALSE}
 m = data.frame('ID' = rownames(datExpr), 'gene_mean' = apply(datExpr, 1, mean))
 
-m_scores = SFARI_genes %>% dplyr::select(`gene-score`, ID) %>% right_join(m, by='ID') %>%
-  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+m_scores = genes_DE_info %>% dplyr::select(gene.score, ID) %>% right_join(m, by='ID')
 
-p1 = ggplotly(m_scores %>% ggplot(aes(`gene-score`, gene_mean, fill=`gene-score`)) + 
-              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+p1 = ggplotly(m_scores %>% ggplot(aes(gene.score, gene_mean, fill=gene.score)) + 
+              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
               theme_minimal() + theme(legend.position = 'none'))
 
 
 v = data.frame('ID' = rownames(datExpr), 'gene_sd'=apply(datExpr, 1, sd))
 
-v_scores = SFARI_genes %>% dplyr::select(`gene-score`, ID) %>% right_join(v, by='ID') %>%
-  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+v_scores = genes_DE_info %>% dplyr::select(gene.score, ID) %>% right_join(v, by='ID')
 
-p2 = ggplotly(v_scores %>% ggplot(aes(`gene-score`, gene_sd, fill=`gene-score`)) + 
-              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+p2 = ggplotly(v_scores %>% ggplot(aes(gene.score, gene_sd, fill=gene.score)) + 
+              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
                 theme_minimal() + theme(legend.position = 'none') + 
                 ggtitle('Genes\' mean (left) and variance (right) by SFARI score for raw data'))
 
@@ -162,32 +186,30 @@ There is heterocedasticity in the data! Score 1 genes' high variance could be re
 ```{r, warning=FALSE, message=FALSE}
 h = m %>% left_join(v_scores, by='ID')
 
-ggplotly(h %>% ggplot(aes(x=gene_mean, y=gene_sd, fill=`gene-score`, color=`gene-score`)) +
-         geom_point(alpha=0.3) + scale_fill_manual(values=gg_colour_hue(7)) + 
-         scale_color_manual(values=gg_colour_hue(7)) + scale_x_log10() + scale_y_log10() + 
+ggplotly(h %>% ggplot(aes(x=gene_mean, y=gene_sd, fill=gene.score, color=gene.score)) +
+         geom_point(alpha=0.3) + scale_fill_manual(values=gg_colour_hue(8)) + 
+         scale_color_manual(values=gg_colour_hue(8)) + scale_x_log10() + scale_y_log10() + 
          theme_minimal())
 ```
 
 Seems like the variance was actually due to the heterocedasticity of the data more than ASD-related because after the transformation it became smaller than the others
-```{r, fig.width=12, warning=FALSE, message=FALSE}
+```{r, fig.width=10, warning=FALSE, message=FALSE}
 datExpr_log2 = log2(datExpr+1)
 m = data.frame('ID' = rownames(datExpr_log2), 'gene_mean' = apply(datExpr_log2, 1, mean))
 
-m_scores = SFARI_genes %>% dplyr::select(`gene-score`, ID) %>% right_join(m, by='ID') %>%
-  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+m_scores = genes_DE_info %>% dplyr::select(gene.score, ID) %>% right_join(m, by='ID')
 
-p1 = ggplotly(m_scores %>% ggplot(aes(`gene-score`, gene_mean, fill=`gene-score`)) + 
-              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+p1 = ggplotly(m_scores %>% ggplot(aes(gene.score, gene_mean, fill=gene.score)) + 
+              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
               theme_minimal() + theme(legend.position = 'none'))
 
 
 v = data.frame('ID' = rownames(datExpr_log2), 'gene_sd' = apply(datExpr_log2, 1, sd))
 
-v_scores = SFARI_genes %>% dplyr::select(`gene-score`, ID) %>% right_join(v, by='ID') %>%
-  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
+v_scores = genes_DE_info %>% dplyr::select(gene.score, ID) %>% right_join(v, by='ID')
 
-p2 = ggplotly(v_scores %>% ggplot(aes(`gene-score`, gene_sd, fill=`gene-score`)) + 
-              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(7)) + 
+p2 = ggplotly(v_scores %>% ggplot(aes(gene.score, gene_sd, fill=gene.score)) + 
+              geom_boxplot() + scale_fill_manual(values=gg_colour_hue(8)) + 
                 theme_minimal() + theme(legend.position = 'none') + 
                 ggtitle('Genes\' mean (left) and variance (right) by SFARI score for log2 data'))
 

@@ -1,5 +1,5 @@
 ---
-title: "Filtering comparisons for vst data"
+title: 'Filtering comparisons for vst data'
 output:
   html_document:
     code_folding: 'hide'
@@ -66,7 +66,8 @@ genes_DE_info = genes_DE_info %>% dplyr::select(ID, logFC, AveExpr, t, P.Value, 
                 mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`))
 
 
-datExpr_backup= datExpr
+datExpr = datExpr %>% data.frame
+datExpr_backup = datExpr
 
 
 rm(to_keep, datProbes)
