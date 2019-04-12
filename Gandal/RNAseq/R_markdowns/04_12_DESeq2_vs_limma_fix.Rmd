@@ -121,9 +121,16 @@ housekeeping_genes_CTL = datExpr %>% dplyr::select(which(datMeta$Diagnosis_!='AS
 
 ASD_vs_CTL = data.frame('ID'=housekeeping_genes, 'ASD'=housekeeping_genes_ASD+1, 'CTL'=housekeeping_genes_CTL+1)
 
-ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1, aes(id=ID)) + 
+ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1, aes(id=ID)) + coord_fixed() +
                geom_smooth(method=lm, se=F, color='#009999') + theme_minimal() +
                scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2'))
+
+ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1, aes(id=ID)) + coord_fixed() +
+               geom_smooth(method=lm, se=F, color='#009999') + theme_minimal() +
+               scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2')
+
+ASD_vs_CTL %>% ggplot(aes(log2(ASD), log2(CTL))) + geom_point(alpha=0.1, aes(id=ID)) + coord_fixed() +
+               geom_smooth(method=lm, se=F, color='#009999') + theme_minimal()
 
 
 rm(housekeeping_genes_ASD, housekeeping_genes_CTL)
@@ -148,6 +155,10 @@ datExpr_fix = bind_cols(datExpr_ASD, datExpr_CTL)
 datExpr_fix = datExpr_fix[,match(colnames(datExpr),colnames(datExpr_fix))]
 rownames(datExpr_fix) = rownames(datExpr)
 
+min_val = datExpr_fix %>% apply(1, min) %>% min
+if(min_val<0) datExpr_fix = datExpr_fix + abs(min_val)
+datExpr_fix = floor(datExpr_fix) # Round doesn't work I don't know why!
+
 housekeeping_genes_ASD = datExpr_fix %>% dplyr::select(which(datMeta$Diagnosis_=='ASD')) %>% 
                               filter(rownames(.) %in% housekeeping_genes) %>% rowMeans
 housekeeping_genes_CTL = datExpr_fix %>% dplyr::select(which(datMeta$Diagnosis_!='ASD')) %>% 
@@ -155,9 +166,12 @@ housekeeping_genes_CTL = datExpr_fix %>% dplyr::select(which(datMeta$Diagnosis_!
 
 ASD_vs_CTL = data.frame('ASD' = housekeeping_genes_ASD+1, 'CTL' = housekeeping_genes_CTL+1)
 
-ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1) + 
+ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1) + coord_fixed() +
          geom_smooth(method=lm, se=F, color='#009999') + scale_x_continuous(trans='log2') + 
          scale_y_continuous(trans='log2') + theme_minimal())
+
+ASD_vs_CTL %>% ggplot(aes(log2(ASD), log2(CTL))) + geom_point(alpha=0.1) + coord_fixed() +
+         geom_smooth(method=lm, se=F, color='#009999') + theme_minimal()
 
 rm(fit, slope, intercept, datExpr_ASD, datExpr_CTL, housekeeping_genes, 
    housekeeping_genes_ASD, housekeeping_genes_CTL, ASD_vs_CTL)
@@ -165,21 +179,10 @@ rm(fit, slope, intercept, datExpr_ASD, datExpr_CTL, housekeeping_genes,
 
 ### Differential Expression analysis with transformed data
 
-* We need to round the numbers to treat them as raw counts for the DESeq2 package and make them all > 0
-
-```{r}
-min_val = datExpr_fix %>% apply(1, min) %>% min
-if(min_val<0) datExpr_fix = datExpr_fix + abs(min_val)
-datExpr_fix = round(datExpr_fix)
-
-datExpr = datExpr_fix
-
-rm(min_val)
-```
-
 ```{r, warning=FALSE}
 ################################################################################
 # Calculate Differential Expression using limma and DESeq2 packages
+datExpr = datExpr_fix
 
 # Limma
 if(!file.exists('./../working_data/genes_ASD_DE_info_limma_fix.csv')){

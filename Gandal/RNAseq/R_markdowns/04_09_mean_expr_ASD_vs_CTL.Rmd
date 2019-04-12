@@ -75,51 +75,49 @@ rm(to_keep, datProbes)
 
 ### Raw data
 
-##### ASD samples seem to have higher gene expression consistently for all genes (~2)
 ```{r, warning=FALSE, message=FALSE, fig.width=10}
 datExpr_raw = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
 datExpr_raw = datExpr_raw[substr(rownames(datExpr_raw),1,3)=='ENS',
                           substring(colnames(datExpr_raw),2) %in% datMeta$Dissected_Sample_ID]
 datExpr_raw = datExpr_raw[rowSums(datExpr_raw)>5,]
 
-asd_samples = as.numeric(datMeta$Diagnosis_=='ASD')
-ctl_samples = as.numeric(!asd_samples)
+datExpr_ASD = datExpr_raw %>% dplyr::select(which(datMeta$Diagnosis_=='ASD')) %>% rowMeans
+datExpr_CTL = datExpr_raw %>% dplyr::select(which(datMeta$Diagnosis_!='ASD')) %>% rowMeans
 
-asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr_raw)),
-                          'ASD_mean' = apply(datExpr_raw, 1, function(x) mean(x*asd_samples)),
-                          'CTL_mean' = apply(datExpr_raw, 1, function(x) mean(x*(ctl_samples)))) %>%
-              left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+ASD_vs_CTL = data.frame('ID'=rownames(datExpr_raw), 'ASD'=datExpr_ASD+1, 'CTL'=datExpr_CTL+1) %>%
+             left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
 
-p1 = ggplotly(asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
+p1 = ggplotly(ASD_vs_CTL %>% ggplot(aes(x=ASD, y=CTL, color=`gene-score`)) + 
               scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + geom_point(alpha=0.4) + 
               geom_smooth(method=lm, se=FALSE, color='gray') +
               ggtitle('Mean expression by gene ASD vs CTL') + theme_minimal())
 
-p2 = ggplotly(asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
+p2 = ggplotly(ASD_vs_CTL %>% dplyr::select(ID, ASD, CTL) %>% melt %>% 
               ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + 
-                     coord_cartesian(ylim = c(0, 280)) + theme_minimal())
+                     coord_cartesian(ylim = c(0, 500)) + theme_minimal())
 
 subplot(p1, p2, nrows=1)
 
-remove(p1, p2, asd_ctl_mean)
+remove(p1, p2, ASD_vs_CTL)
 ```
 
 ### VST normalised data
 
-##### ASD samples seem to have higher gene expression consistently for all genes (~1.5)
 ```{r, warning=FALSE, message=FALSE, fig.width=10}
 
-asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr)),
-                          'ASD_mean' = apply(datExpr, 1, function(x) mean(x*asd_samples)),
-                          'CTL_mean' = apply(datExpr, 1, function(x) mean(x*(ctl_samples)))) %>%
-              left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+datExpr_ASD = datExpr %>% dplyr::select(which(datMeta$Diagnosis_=='ASD')) %>% rowMeans
+datExpr_CTL = datExpr %>% dplyr::select(which(datMeta$Diagnosis_!='ASD')) %>% rowMeans
 
-p1 = ggplotly(asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
-              geom_point(alpha=0.4) + geom_smooth(method=lm, se=FALSE, color='gray') + 
+ASD_vs_CTL = data.frame('ID'=rownames(datExpr), 'ASD'=datExpr_ASD+1, 'CTL'=datExpr_CTL+1) %>%
+             left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+
+p1 = ggplotly(ASD_vs_CTL %>% ggplot(aes(x=ASD, y=CTL, color=`gene-score`)) + 
+              scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + geom_point(alpha=0.4) + 
+              geom_smooth(method=lm, se=FALSE, color='gray') +
               ggtitle('Mean expression by gene ASD vs CTL') + theme_minimal())
 
-p2 = ggplotly(asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
-     ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal())
+p2 = ggplotly(ASD_vs_CTL %>% dplyr::select(ID, ASD, CTL) %>% melt %>% 
+              ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal())
 
 subplot(p1, p2, nrows=1)
 
@@ -133,18 +131,20 @@ remove(p1, p2, asd_ctl_mean)
 scatter_plot_by_lobe = function(lobe){
   
   lobe_samples = as.numeric(datMeta$Brain_lobe==lobe)
+
+  datExpr_ASD = datExpr %>% dplyr::select(which(datMeta$Diagnosis_=='ASD' & datMeta$Brain_lobe==lobe)) %>% rowMeans
+  datExpr_CTL = datExpr %>% dplyr::select(which(datMeta$Diagnosis_!='ASD' & datMeta$Brain_lobe==lobe)) %>% rowMeans
   
-  asd_ctl_mean = data.frame('ID' = as.character(rownames(datExpr)),
-                            'ASD_mean' = apply(datExpr, 1, function(x) mean(x*asd_samples*lobe_samples)),
-                            'CTL_mean' = apply(datExpr, 1, function(x) mean(x*(ctl_samples*lobe_samples)))) %>%
-                left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+  ASD_vs_CTL = data.frame('ID'=rownames(datExpr), 'ASD'=datExpr_ASD+1, 'CTL'=datExpr_CTL+1) %>%
+             left_join(SFARI_genes, by='ID') %>% mutate(`gene-score`=as.factor(`gene-score`))
+
+  p1 = ASD_vs_CTL %>% ggplot(aes(x=ASD, y=CTL, color=`gene-score`)) + 
+       scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + geom_point(alpha=0.4) + 
+       geom_smooth(method=lm, se=FALSE, color='gray') +
+       ggtitle(glue('Mean expression by gene ASD vs CTL in ',lobe, ' lobe')) + theme_minimal()
   
-  p1 = asd_ctl_mean %>% ggplot(aes(x=ASD_mean, y=CTL_mean, color=`gene-score`)) + 
-                geom_point(alpha=0.4) + geom_smooth(method=lm, se=FALSE, color='gray') + 
-                ggtitle(glue(lobe,' Lobe')) + theme_minimal()
-  
-  p2 = asd_ctl_mean %>% dplyr::select(ID, ASD_mean, CTL_mean) %>% melt %>% 
-     ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal()
+  p2 = ASD_vs_CTL %>% dplyr::select(ID, ASD, CTL) %>% melt %>% 
+       ggplot(aes(variable, value, fill=variable)) + geom_boxplot() + theme_minimal()
   
   return(list(p1,p2))
 }
