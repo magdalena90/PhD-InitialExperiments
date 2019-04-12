@@ -1,0 +1,410 @@
+---
+title: 'DESeq2 vs limma DEA'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Note**: Using vst normalisation (just for performing the DEA from the limma package)
+```{r, echo=TRUE, include=FALSE}
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+
+library(limma); library(DESeq2)
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; 
+library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
+library(biomaRt)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-1)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-2)], 'gray','#808080')
+}
+```
+
+```{r, message=FALSE}
+
+# Load csvs
+datExpr = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+datMeta = read.csv('./../raw_data/RNAseq_ASD_datMeta.csv')
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
+
+# Make sure datExpr and datMeta columns/rows match
+rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
+if(!all(colnames(datExpr) == rownames(datMeta))){
+  print('Columns in datExpr don\'t match the rowd in datMeta!')
+}
+
+# Annotate probes
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+datProbes$length = datProbes$end_position-datProbes$start_position
+
+# Group brain regions by lobes
+datMeta$Brain_Region = as.factor(datMeta$Region)
+datMeta$Brain_lobe = 'Occipital'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA4_6', 'BA9', 'BA24', 'BA44_45')] = 'Frontal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA3_1_2_5', 'BA7')] = 'Parietal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA41_42_22')] = 'Temporal'
+datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
+
+#################################################################################
+# FILTERS:
+
+# 1 Filter probes with start or end position missing (filter 5)
+# These can be filtered without probe info, they have weird IDS that don't start with ENS
+to_keep = !is.na(datProbes$length)
+datProbes = datProbes[to_keep,]
+datExpr = datExpr[to_keep,]
+rownames(datProbes) = datProbes$ensembl_gene_id
+
+# 2. Filter samples from ID AN03345 (filter 2)
+to_keep = (datMeta$Subject_ID != 'AN03345')
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+# 3. Filter samples with rowSums <= 40
+to_keep = rowSums(datExpr)>40
+datExpr = datExpr[to_keep,]
+datProbes = datProbes[to_keep,]
+
+#################################################################################
+# Annotate SFARI genes
+
+# Get ensemble IDS for SFARI genes
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                   mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                   dplyr::select('ID', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+#################################################################################
+# Add functional annotation to genes from GO
+
+GO_annotations = read.csv('./../working_data/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+
+datExpr_backup = datExpr
+
+rm(getinfo, to_keep, gene_names, mart, GO_annotations)
+
+```
+
+## Transform expression levels from ASD to match CTL
+
+Calculating the mean expression of the genes that don't have a neuronal functional annotation nor a SFARI score for ADS and CTL separately and plotting ASD vs CTL with log2 scale on both axis we can see that the fitted line has a slope close to 0.5
+```{r, warning=FALSE}
+housekeeping_genes = rownames(datExpr)[!rownames(datExpr) %in% GO_neuronal$ID & 
+                                       !rownames(datExpr) %in% SFARI_genes$ID]
+housekeeping_genes_ASD = datExpr %>% dplyr::select(which(datMeta$Diagnosis_=='ASD')) %>% 
+                              filter(rownames(.) %in% housekeeping_genes) %>% rowMeans
+housekeeping_genes_CTL = datExpr %>% dplyr::select(which(datMeta$Diagnosis_!='ASD')) %>% 
+                              filter(rownames(.) %in% housekeeping_genes) %>% rowMeans
+
+ASD_vs_CTL = data.frame('ID'=housekeeping_genes, 'ASD'=housekeeping_genes_ASD+1, 'CTL'=housekeeping_genes_CTL+1)
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1, aes(id=ID)) + 
+               geom_smooth(method=lm, se=F, color='#009999') + theme_minimal() +
+               scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2'))
+
+
+rm(housekeeping_genes_ASD, housekeeping_genes_CTL)
+```
+
+#### Transformation:
+
+Fit a linear model between ASD and CTL for these non-neuronal, non-SFARI genes and use the slope and intercept to transform the ASD expression to match the one from the CTL samples.
+```{r}
+fit = lm(log2(ASD) ~ log2(CTL), ASD_vs_CTL)
+slope = summary(fit)$coefficients[2,1]
+intercept = summary(fit)$coefficients[1,1]
+
+# print(glue('Intercept = ', round(intercept,2), ' and slope = ', round(slope,2)))
+
+datExpr_ASD = datExpr %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
+datExpr_CTL = datExpr %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+
+datExpr_ASD = (datExpr_ASD-intercept)/slope
+
+datExpr_fix = bind_cols(datExpr_ASD, datExpr_CTL)
+datExpr_fix = datExpr_fix[,match(colnames(datExpr),colnames(datExpr_fix))]
+rownames(datExpr_fix) = rownames(datExpr)
+
+housekeeping_genes_ASD = datExpr_fix %>% dplyr::select(which(datMeta$Diagnosis_=='ASD')) %>% 
+                              filter(rownames(.) %in% housekeeping_genes) %>% rowMeans
+housekeeping_genes_CTL = datExpr_fix %>% dplyr::select(which(datMeta$Diagnosis_!='ASD')) %>% 
+                              filter(rownames(.) %in% housekeeping_genes) %>% rowMeans
+
+ASD_vs_CTL = data.frame('ASD' = housekeeping_genes_ASD+1, 'CTL' = housekeeping_genes_CTL+1)
+
+ggplotly(ASD_vs_CTL %>% ggplot(aes(ASD, CTL)) + geom_point(alpha=0.1) + 
+         geom_smooth(method=lm, se=F, color='#009999') + scale_x_continuous(trans='log2') + 
+         scale_y_continuous(trans='log2') + theme_minimal())
+
+rm(fit, slope, intercept, datExpr_ASD, datExpr_CTL, housekeeping_genes, 
+   housekeeping_genes_ASD, housekeeping_genes_CTL, ASD_vs_CTL)
+```
+
+### Differential Expression analysis with transformed data
+
+* We need to round the numbers to treat them as raw counts for the DESeq2 package and make them all > 0
+
+```{r}
+min_val = datExpr_fix %>% apply(1, min) %>% min
+if(min_val<0) datExpr_fix = datExpr_fix + abs(min_val)
+datExpr_fix = round(datExpr_fix)
+
+datExpr = datExpr_fix
+
+rm(min_val)
+```
+
+```{r, warning=FALSE}
+################################################################################
+# Calculate Differential Expression using limma and DESeq2 packages
+
+# Limma
+if(!file.exists('./../working_data/genes_ASD_DE_info_limma_fix.csv')){
+  
+  # First perform vst normalisation
+  counts = as.matrix(datExpr)
+  rowRanges = GRanges(datProbes$chromosome_name,
+                      IRanges(datProbes$start_position, width=datProbes$length),
+                      strand=datProbes$strand,
+                      feature_id=datProbes$ensembl_gene_id)
+  
+  se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+  dds = DESeqDataSet(se, design =~Diagnosis_)
+  dds = estimateSizeFactors(dds)
+  vst_output = vst(dds)
+  datExpr_vst = assay(vst_output)
+  
+  # Calculate DE of normalised data
+  mod = model.matrix(~ Diagnosis_, data=datMeta)
+  corfit = duplicateCorrelation(datExpr_vst, mod, block=datMeta$Subject_ID)
+  lmfit = lmFit(datExpr_vst, design=mod, block=datMeta$Subject_ID, correlation=corfit$consensus)
+  fit = eBayes(lmfit, trend=T, robust=T)
+  top_genes = topTable(fit, coef=2, number=nrow(datExpr_vst))
+  DE_info_limma = top_genes[match(rownames(datExpr_vst), rownames(top_genes)),] %>%
+                  rownames_to_column(var = 'ID') %>%
+                  mutate('logFC_limma'=logFC, 'adj.P.Val_limma'=adj.P.Val) %>%
+                  dplyr::select(ID, logFC_limma, adj.P.Val_limma)
+  
+  write.csv(DE_info_limma, './../working_data/genes_ASD_DE_info_limma_fix.csv', row.names = FALSE)
+  
+  rm(mod, corfit, lmfit, fit, top_genes)
+  
+} else DE_info_limma = read.csv('./../working_data/genes_ASD_DE_info_limma_fix.csv')
+
+# DESeq2 DE
+if(!file.exists('./../working_data/genes_ASD_DE_info_DESeq2_fix.csv')){
+  counts = as.matrix(datExpr)
+  rowRanges = GRanges(datProbes$chromosome_name,
+                      IRanges(datProbes$start_position, width=datProbes$length),
+                      strand=datProbes$strand,
+                      feature_id=datProbes$ensembl_gene_id)
+  
+  se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+  ddsSE = DESeqDataSet(se, design =~Diagnosis_)
+  
+  dds = DESeq(ddsSE)
+  DE_info_DESeq2 = results(dds) %>% data.frame %>% rownames_to_column(var = 'ID') %>%
+                   mutate('logFC_DESeq2'=log2FoldChange, 'adj.P.Val_DESeq2'=padj) %>% 
+                   dplyr::select(ID, logFC_DESeq2, adj.P.Val_DESeq2)
+  
+  write.csv(DE_info_DESeq2, './../working_data/genes_ASD_DE_info_DESeq2_fix.csv', row.names = FALSE)
+  
+  rm(counts, rowRanges, se, ddsSE, dds)
+  
+} else DE_info_DESeq2 = read.csv('./../working_data/genes_ASD_DE_info_DESeq2_fix.csv')
+
+DE_info = DE_info_limma %>% left_join(DE_info_DESeq2, by='ID')
+
+rm(DE_info_limma, DE_info_DESeq2)
+
+```
+<br>
+
+#### DE Output Comparisons
+
+##### **Log fold change**
+```{r, warning=FALSE}
+ggplotly(DE_info %>% ggplot(aes(logFC_DESeq2, logFC_limma)) + geom_point(alpha=0.05, aes(id=ID)) +
+         geom_vline(xintercept=-log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept=-log2(1.2), color='#cc0099', size=0.5) +
+         geom_vline(xintercept= log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept= log2(1.2), color='#cc0099', size=0.5) +
+         ggtitle(glue('LogFC (corr=',round(cor(DE_info$logFC_limma, DE_info$logFC_DESeq2),2),')')) +
+         geom_smooth(method=lm, se=F, color='#009999', size=0.5) + coord_fixed() +
+         theme_minimal())
+```
+
+##### **P-values**
+
+Although both functions use the BH method to adjust for multiple testing, the limma package seems to be more strict, assigning a high p-value to many of the points that DESeq2 considers statistically significant
+
+```{r, warning=FALSE}
+DE_info %>% ggplot(aes(adj.P.Val_DESeq2, adj.P.Val_limma)) + geom_point(alpha=0.05, aes(id=ID)) + 
+            geom_vline(xintercept=0.05, color='#cc0099') + 
+            geom_hline(yintercept=0.05, color='#cc0099') + 
+            geom_smooth(method=lm, se=F, color='#009999', size=0.5) + coord_fixed() +
+            ggtitle(glue('Adjusted p-values (corr=',round(cor(DE_info$adj.P.Val_limma, 
+                                                           DE_info$adj.P.Val_DESeq2),2),')')) + 
+            theme_minimal()
+```
+
+##### Statistical significance concordance using adjusted p-values and logfc>log2(1.2)
+```{r}
+signif_genes = data.frame('limma Significance' = DE_info$adj.P.Val_limma<0.05 & DE_info$logFC_limma>log2(1.2),
+                          'DESeq2 Significance' = DE_info$adj.P.Val_DESeq2<0.05 & DE_info$logFC_DESeq2>log2(1.2),
+                          'ID' = DE_info$ID)
+
+signif_genes %>% dplyr::select(-ID) %>% table
+
+signif_genes %>% dplyr::select(-ID) %>% table/nrow(DE_info)*100
+
+print(glue(round(sum(signif_genes$limma.Significance & !signif_genes$DESeq2.Significance)/sum(signif_genes$limma.Significance)*100,2),
+           '% of the statistically significant limma genes are not significant for DESeq2.
+           ', round(sum(!signif_genes$limma.Significance & signif_genes$DESeq2.Significance)/sum(signif_genes$DESeq2.Significance)*100,2),
+           '% of the statistically significant DESeq2 genes are not significant for limma.'))
+```
+<br>
+
+SFARI score distribution of genes classified as significant by both methods
+```{r, warning=FALSE}
+both_methods = data.frame('ID'=signif_genes %>% filter(limma.Significance & DESeq2.Significance) %>% dplyr::select(ID)) %>%      
+               left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, `gene-score`)
+
+table(both_methods$`gene-score`, useNA='ifany')
+
+round(table(both_methods$`gene-score`, useNA='ifany')/nrow(both_methods)*100,2)
+
+rm(both_methods)
+```
+<br>
+
+SFARI score distribution of genes classified as significant by limma but not DESeq2
+```{r, warning=FALSE}
+only_limma = data.frame('ID'=signif_genes %>% filter(limma.Significance & !DESeq2.Significance) %>% dplyr::select(ID)) %>%      
+             left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, `gene-score`)
+
+table(only_limma$`gene-score`, useNA='ifany')
+
+round(table(only_limma$`gene-score`, useNA='ifany')/nrow(only_limma)*100,2)
+
+rm(only_limma)
+```
+<br>
+
+SFARI score distribution of genes classified as significant by DESeq2 but not limma
+```{r, warning=FALSE}
+only_DESeq2 = data.frame('ID'=signif_genes %>% filter(!limma.Significance & DESeq2.Significance) %>% dplyr::select(ID)) %>%      
+             left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, `gene-score`)
+
+table(only_DESeq2$`gene-score`, useNA='ifany')
+
+round(table(only_DESeq2$`gene-score`, useNA='ifany')/nrow(only_DESeq2)*100,2)
+
+rm(only_DESeq2)
+```
+<br>
+
+SFARI score distribution of genes classified as not significant by both methods
+```{r, warning=FALSE}
+neither = data.frame('ID'=signif_genes %>% filter(!limma.Significance & !DESeq2.Significance) %>% dplyr::select(ID)) %>%      
+             left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, `gene-score`)
+
+table(neither$`gene-score`, useNA='ifany')
+
+round(table(neither$`gene-score`, useNA='ifany')/nrow(neither)*100,2)
+
+rm(neither, signif_genes)
+```
+
+<br><br>
+
+## Compare within methods before and after transformation
+
+### Limma
+```{r, warning=FALSE}
+limma_orig = read.csv('./../working_data/genes_ASD_DE_info_limma.csv')
+colnames(limma_orig) = c('ID','logFC_orig', 'adj.P.Val_orig')
+
+limma_fix = read.csv('./../working_data/genes_ASD_DE_info_limma_fix.csv')
+colnames(limma_fix) = c('ID','logFC_fix', 'adj.P.Val_fix')
+
+limma_both = limma_orig %>% left_join(limma_fix, by='ID')
+
+ggplotly(limma_both %>% ggplot(aes(logFC_orig, logFC_fix)) + geom_point(alpha=0.05, aes(id=ID)) + coord_fixed() +
+         geom_vline(xintercept=-log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept=-log2(1.2), color='#cc0099', size=0.5) +
+         geom_vline(xintercept= log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept= log2(1.2), color='#cc0099', size=0.5) +
+         theme_minimal()+  ggtitle(glue('LogFC (corr=',round(cor(limma_both$logFC_orig, 
+                                                                 limma_both$logFC_fix),4),')')))
+
+ggplotly(limma_both %>% ggplot(aes(adj.P.Val_orig, adj.P.Val_fix)) + geom_point(alpha=0.05, aes(id=ID)) +
+         geom_vline(xintercept=0.05, color='#cc0099') + geom_hline(yintercept=0.05, color='#cc0099') +
+         theme_minimal()+  ggtitle(glue('adjusted p-value (corr=',round(cor(limma_both$adj.P.Val_orig, 
+                                        limma_both$adj.P.Val_fix),4),')')) + coord_fixed())
+
+rm(limma_orig, limma_fix)
+```
+
+```{r}
+limma_comp = data.frame('orig_significant' = limma_both$logFC_orig>log2(1.2) & limma_both$adj.P.Val_orig<0.05,
+                        'fix_significant' = limma_both$logFC_fix>log2(1.2) & limma_both$adj.P.Val_fix<0.05)
+
+table(limma_comp)
+```
+
+### DESeq2
+```{r, warning=FALSE}
+DESeq2_orig = read.csv('./../working_data/genes_ASD_DE_info_DESeq2.csv') %>% dplyr::select(-X)
+colnames(DESeq2_orig) = c('ID','logFC_orig', 'adj.P.Val_orig')
+
+DESeq2_fix = read.csv('./../working_data/genes_ASD_DE_info_DESeq2_fix.csv')
+colnames(DESeq2_fix) = c('ID','logFC_fix', 'adj.P.Val_fix')
+
+DESeq2_both = DESeq2_orig %>% left_join(DESeq2_fix, by='ID')
+
+ggplotly(DESeq2_both %>% ggplot(aes(logFC_orig, logFC_fix)) + geom_point(alpha=0.05, aes(id=ID)) + coord_fixed() +
+         geom_vline(xintercept=-log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept=-log2(1.2), color='#cc0099', size=0.5) +
+         geom_vline(xintercept= log2(1.2), color='#cc0099', size=0.5) + 
+         geom_hline(yintercept= log2(1.2), color='#cc0099', size=0.5) +
+         theme_minimal() + ggtitle(glue('LogFC (corr=',round(cor(DESeq2_both$logFC_orig, 
+                                                                 DESeq2_both$logFC_fix),4),')')))
+
+ggplotly(DESeq2_both %>% ggplot(aes(adj.P.Val_orig, adj.P.Val_fix)) + geom_point(alpha=0.05, aes(id=ID)) +
+         geom_vline(xintercept=0.05, color='#cc0099') + geom_hline(yintercept=0.05, color='#cc0099') +
+         theme_minimal()+  ggtitle(glue('adjusted p-value (corr=',round(cor(DESeq2_both$adj.P.Val_orig, 
+                                        DESeq2_both$adj.P.Val_fix),4),')')) + coord_fixed())
+
+rm(DESeq2_orig, DESeq2_fix)
+```
+
+```{r}
+DESeq2_both = data.frame('orig_significant' = DESeq2_both$logFC_orig>log2(1.2) & DESeq2_both$adj.P.Val_orig<0.05,
+                        'fix_significant' = DESeq2_both$logFC_fix>log2(1.2) & DESeq2_both$adj.P.Val_fix<0.05)
+
+table(DESeq2_both)
+```
