@@ -1,0 +1,502 @@
+---
+title: 'Clustering Genes scaling genes'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Filter criteria:
+
+- Filter differentially expressed genes between autism and control (adj. p-value < 0.05 and lfc<log2(1.2))
+
+- No samples are removed based on network connectivity z-scores
+
+Preprocessing:
+
+- VST Normalisation
+
+- DESeq2 DEA
+
+```{r, echo=TRUE, include=FALSE}
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gandal/RNAseq/R_markdowns')
+#setwd('/home/magdalena/PhD/initialExperiments/Gandal/RNAseq/R_markdowns')
+
+library(limma);
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra)
+library(plotlyutils) # https://github.com/Alanocallaghan/plotlyutils/
+library(ConsensusClusterPlus)
+library(JADE) ; library(MineICA) ; library(moments) ; library(fdrtool)
+library(ClusterR)
+library(WGCNA)
+library(pdfCluster) ; library(gplots)
+library(biomaRt)
+#library(quantable)
+```
+
+```{r, warning=FALSE, message=FALSE}
+# # Load csvs
+# datExpr = read.csv('./../raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+# datMeta = read.csv('./../raw_data/RNAseq_ASD_datMeta.csv')
+# 
+# # Make sure datExpr and datMeta columns/rows match
+# rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
+# if(!all(colnames(datExpr) == rownames(datMeta))){
+#   print('Columns in datExpr don\'t match the rowd in datMeta!')
+# }
+# 
+# # Annotate probes
+# getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+#             'end_position','strand','band','gene_biotype','percentage_gc_content')
+# mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+#                dataset='hsapiens_gene_ensembl',
+#                host='feb2014.archive.ensembl.org') ## Gencode v19
+# datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+# datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+# datProbes$length = datProbes$end_position-datProbes$start_position
+# 
+# # Group brain regions by lobes
+# datMeta$Brain_Region = as.factor(datMeta$Region)
+# datMeta$Brain_lobe = 'Occipital'
+# datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA4_6', 'BA9', 'BA24', 'BA44_45')] = 'Frontal'
+# datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA3_1_2_5', 'BA7')] = 'Parietal'
+# datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA41_42_22')] = 'Temporal'
+# datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
+# 
+# #################################################################################
+# # FILTERS:
+# 
+# # 1 Filter probes with start or end position missing (filter 5)
+# # These can be filtered without probe info, they have weird IDS that don't start with ENS
+# to_keep = !is.na(datProbes$length)
+# datProbes = datProbes[to_keep,]
+# datExpr = datExpr[to_keep,]
+# rownames(datProbes) = datProbes$ensembl_gene_id
+# 
+# # 2. Filter samples from ID AN03345 (filter 2)
+# to_keep = (datMeta$Subject_ID != 'AN03345')
+# datMeta = datMeta[to_keep,]
+# datExpr = datExpr[,to_keep]
+# 
+# # 3. Filter samples with rowSums <= 40
+# to_keep = rowSums(datExpr)>40
+# datExpr = datExpr[to_keep,]
+# datProbes = datProbes[to_keep,]
+# 
+# if(!file.exists('./../working_data/genes_ASD_DE_info_DESeq2.csv')){
+#   counts = as.matrix(datExpr)
+#   rowRanges = GRanges(datProbes$chromosome_name,
+#                       IRanges(datProbes$start_position, width=datProbes$length),
+#                       strand=datProbes$strand,
+#                       feature_id=datProbes$ensembl_gene_id)
+#   
+#   se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+#   ddsSE = DESeqDataSet(se, design =~Diagnosis_)
+#   
+#   dds = DESeq(ddsSE)
+#   DE_info = results(dds) %>% data.frame %>% rownames_to_column(var = 'ID') %>%
+#                    mutate('logFC_DESeq2'=log2FoldChange, 'adj.P.Val_DESeq2'=padj) %>% 
+#                    dplyr::select(ID, logFC_DESeq2, adj.P.Val_DESeq2)
+#   
+#   write.csv(DE_info_DESeq2, './../working_data/genes_ASD_DE_info_DESeq2.csv', row.names = FALSE)
+#   
+#   rm(counts, rowRanges, se, ddsSE, dds, mart)
+#   
+# } else DE_info = read.csv('./../working_data/genes_ASD_DE_info_DESeq2.csv')
+# 
+# save(file='./../working_data/RNAseq_ASD_4region_DEgenes_vst_DESeq2.Rdata', datExpr, datMeta, datProbes, DE_info)
+
+load('./../working_data/RNAseq_ASD_4region_DEgenes_vst_DESeq2.Rdata')
+
+# Scale gene expression values
+# datExpr = datExpr %>% t %>% scale %>% t %>% data.frame
+
+#################################################################################
+# SFARI Genes
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
+
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL', dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                   mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                   dplyr::select('ID', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+
+#################################################################################
+# Add functional annotation to genes from GO
+
+GO_annotations = read.csv('./../working_data/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+datExpr_backup = datExpr
+
+# Filter DE genes
+datExpr = datExpr[DE_info$adj.P.Val_DESeq2<0.05 & DE_info$logFC_DESeq2>log2(1.2),]
+
+rm(mart, gene_names, GO_annotations)
+```
+
+We have less genes than before (~half)
+```{r}
+glue('Number of genes: ', nrow(datExpr), '\n',
+     'Number of samples: ', ncol(datExpr), ' (', sum(datMeta$Diagnosis_=='ASD'), ' ASD, ',
+     sum(datMeta$Diagnosis_!='ASD'), ' controls)')
+```
+
+<!-- ### Robust Normalisation -->
+<!-- ```{r, warning=FALSE} -->
+<!-- datExpr %>% t %>% data.frame %>% sample_n(15) %>% t %>% data.frame %>% melt %>%  -->
+<!--         ggplot(aes(variable, value+1, fill=variable)) + geom_boxplot() + ggtitle('Before Robust Normalisation') +  -->
+<!--         theme_minimal() + theme(legend.position='none') -->
+
+
+
+<!-- ``` -->
+
+### Dimensionality reduction using PCA
+
+First principal component explains 97% of the total variance
+
+```{r, fig.width = 12, warning=FALSE, message=FALSE}
+reduce_dim_datExpr = function(datExpr, datMeta, var_explained=0.98){
+  
+  datExpr = log2(datExpr+1)
+  
+  datExpr_pca = prcomp(datExpr, scale.=TRUE)
+  last_pc = data.frame(summary(datExpr_pca)$importance[3,]) %>% rownames_to_column(var='ID') %>% 
+    filter(.[[2]] >= var_explained) %>% top_n(-1) %>% dplyr::select(ID)
+  
+  par(mfrow=c(1,2))
+  plot(summary(datExpr_pca)$importance[2,], type='b')
+  abline(v=substr(last_pc$ID, 3, nchar(last_pc$ID)), col='blue')
+  plot(summary(datExpr_pca)$importance[3,], type='b')
+  abline(h=var_explained, col='blue')
+  
+  
+  print(glue('Keeping top ', substr(last_pc$ID, 3, nchar(last_pc$ID)), ' components that explain ',
+             var_explained*100, '% of the variance'))
+  
+  datExpr_top_pc = datExpr_pca$x %>% data.frame %>% dplyr::select(PC1:last_pc$ID)
+  
+  return(list('datExpr'=datExpr_top_pc, 'pca_output'=datExpr_pca))
+}
+
+reduce_dim_output = reduce_dim_datExpr(datExpr, datMeta)
+datExpr_redDim = reduce_dim_output$datExpr
+pca_output = reduce_dim_output$pca_output
+
+rm(datSeq, datProbes, reduce_dim_datExpr, reduce_dim_output)
+```
+
+It's more difficult to visualise two clouds of samples now
+```{r}
+datExpr_redDim %>% ggplot(aes(x=PC1, y=PC2)) + geom_point(alpha=0.2) + theme_minimal()
+```
+
+Projecting all the original points into the space created by the two principal components and colouring by the differential expression p-value we can see that the points in the middle of the two clouds were filtered out because their DE wasn't statistically significant. Colouring by their log2 fold change we can see that the genes from the cloud on the top are overexpressed and the genes in the bottom one underexpressed.
+```{r, fig.width = 12, warning=FALSE}
+
+datMeta_backup = datMeta # So datMeta doesn't get replaced with unfiltered version
+load('./../working_data/RNAseq_ASD_4region_normalized_vst.Rdata')
+datMeta = datMeta_backup
+
+ASD_pvals = DE_info$adj.P.Val
+log_fold_change = DE_info$logFC
+
+pca_data_projection = scale(datExpr) %*% pca_output$rotation %>% data.frame %>% filter(rownames(.) %in% DE_info$ID)
+p1 = pca_data_projection %>% ggplot(aes(x=PC1, y=PC2, color=ASD_pvals)) + geom_point(alpha=0.5) + 
+     theme_minimal() + theme(legend.position='bottom')
+p2 = pca_data_projection %>% ggplot(aes(x=PC1, y=PC2, color=log_fold_change)) + geom_point() + 
+     theme_minimal() + theme(legend.position='bottom') + scale_colour_gradient2()
+grid.arrange(p1, p2, ncol=2)
+
+rm(ASD_pvals, log_fold_change, top_genes, datExpr, datProbes, datMeta_backup, p1, p2)
+```
+
+### SFARI genes dataset
+
+Only 159 of our 3071 genes appear on the SFARI list, losing all 23/25 genes with a score of 1
+```{r, warning=FALSE}
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv', 
+    col_types = cols(`number-of-reports` = col_integer(), syndromic = col_logical()))
+```
+
+Gene Score count considering all genes:
+```{r}
+SFARI_genes$`gene-score` %>% table
+```
+
+```{r, warning=FALSE}
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% mutate('gene-symbol'=hgnc_symbol) %>% 
+                   dplyr::select('ensembl_gene_id', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+gene_scores = SFARI_genes %>% dplyr::select(ensembl_gene_id, `gene-score`, syndromic) %>% 
+              right_join(gene_names, by='ensembl_gene_id') %>% dplyr::select(-'gene-symbol')
+
+# Full (ordered) list of datExpr genes with their scores
+gene_scores = data.frame('ensembl_gene_id'=rownames(datExpr_redDim)) %>% 
+              left_join(gene_scores, by = 'ensembl_gene_id') %>%
+              mutate('syndromic' = ifelse(syndromic==FALSE | is.na(syndromic), FALSE, TRUE),
+                     'gene-bool' = ifelse(is.na(`gene-score`), FALSE, TRUE))
+
+rm(SFARI_genes, mart, gene_names)
+```
+
+Gene score count for genes in datExpr
+```{r}
+# gene_scores = gene_scores %>% mutate(`gene-score` = ifelse(is.na(`gene-score`) & 
+#                                      ensembl_gene_id %in% GO_neuronal$ID, 'Neuronal', `gene-score`))
+gene_scores$`gene-score` %>% table
+```
+
+### Clustering
+
+```{r}
+clusterings = list()
+
+clusterings[['SFARI_score']] = gene_scores$`gene-score`
+names(clusterings[['SFARI_score']]) = gene_scores$ensembl_gene_id
+
+clusterings[['SFARI_bool']] = gene_scores$`gene-bool`
+names(clusterings[['SFARI_bool']]) = gene_scores$ensembl_gene_id
+
+clusterings[['syndromic']] = gene_scores$syndromic
+names(clusterings[['syndromic']]) = gene_scores$ensembl_gene_id
+```
+
+#### K-means Clustering
+
+```{r}
+set.seed(123)
+wss = sapply(1:10, function(k) kmeans(datExpr_redDim, k, iter.max=100, nstart=25,
+                                      algorithm='MacQueen')$tot.withinss)
+plot(wss, type='b', main='K-Means Clustering')
+best_k = 3
+abline(v = best_k, col='blue')
+
+datExpr_k_means = kmeans(datExpr_redDim, best_k, iter.max=100, nstart=25)
+clusterings[['km']] = datExpr_k_means$cluster
+```
+
+#### Hierarchical Clustering
+
+Chose k=5 as best number of clusters. SFARI genes seem to group in the last two clusters
+
+```{r, warning=FALSE, fig.width=12, fig.height=6}
+h_clusts = datExpr_redDim %>% dist %>% hclust
+# plot(h_clusts, hang = -1, cex = 0.6, labels=FALSE)
+best_k = 7
+clusterings[['hc']] = cutree(h_clusts, best_k)
+
+create_viridis_dict = function(){
+  min_score = clusterings[['SFARI_score']] %>% min(na.rm=TRUE)
+  max_score = clusterings[['SFARI_score']] %>% max(na.rm=TRUE)
+  viridis_score_cols = viridis(max_score - min_score + 1)
+  names(viridis_score_cols) = seq(min_score, max_score)
+  
+  return(viridis_score_cols)
+}
+
+viridis_score_cols = create_viridis_dict()
+
+dend_meta = gene_scores[match(labels(h_clusts), gene_scores$ensembl_gene_id),] %>% 
+            mutate('SFARI_score' = viridis_score_cols[`gene-score`],                   # Purple: 2, Yellow: 6
+                   'SFARI_bool' = ifelse(`gene-bool` == T, '#21908CFF', 'white'), # Acqua
+                   'Syndromic' = ifelse(syndromic == T, 'orange', 'white'),
+                   'Neuronal' = ifelse(ensembl_gene_id %in% GO_neuronal$ID, 'gray','white')) %>% 
+            dplyr::select(SFARI_score, SFARI_bool, Syndromic, Neuronal)
+
+h_clusts %>% as.dendrogram %>% set('labels', rep('', nrow(datMeta))) %>% 
+             set('branches_k_color', k=best_k) %>% plot
+colored_bars(colors=dend_meta)
+```
+
+#### Consensus Clustering
+
+Samples are grouped into two big clusters, two small clusters and two outliers, the first big cluster has one main subcluster, two small subclusters and three outliers, and the second one has one main subcluster, one small one and three groups of outliers.
+
+*Output plots in clustering_genes_04_12 folder
+
+```{r echo=FALSE, message=FALSE}
+# cc_output = datExpr_redDim %>% as.matrix %>% t %>% ConsensusClusterPlus(maxK=8, reps=5, seed=123,
+#                                                    title='clustering_genes_04_12/cc_l1', plot='png')
+# save(cc_output, file='clustering_genes_04_12/cc_l1/cc_output.RData')
+load('clustering_genes_04_12/cc_l1/cc_output.RData')
+best_k = 4 # 2 clusters and 2 outliers
+clusterings[['cc_l1']] = cc_output[[best_k]]$consensusClass
+
+clusterings[['cc_l2']] = clusterings[['cc_l1']]
+# cc_output_c1 = datExpr_redDim %>% filter(clusterings[['cc_l1']]==1) %>% as.matrix %>% t %>%
+#   ConsensusClusterPlus(maxK=8, reps=50, seed=123, title='clustering_genes_04_12/cc_l2_1/', plot='png')
+# save(cc_output_c1, file='clustering_genes_04_12/cc_l2_1/cc_output.RData')
+load('clustering_genes_04_12/cc_l2_1/cc_output.RData')
+best_k = 1 # No subclusters
+# clusterings[['cc_l2']][clusterings[['cc_l1']]==1] = cc_output_c1[[best_k]]$consensusClass %>%
+#                                                     sapply(function(x) glue('1_', x))
+
+# cc_output_c2 = datExpr_redDim %>% filter(clusterings[['cc_l1']]==2) %>% as.matrix %>% t %>%
+#   ConsensusClusterPlus(maxK=8, reps=50, seed=123, title='clustering_genes_04_12/cc_l2_2/', plot='png')
+# save(cc_output_c2, file='clustering_genes_04_12/cc_l2_2/cc_output.RData')
+load('clustering_genes_04_12/cc_l2_2/cc_output.RData')
+best_k = 1 # No subclusters
+# clusterings[['cc_l2']][clusterings[['cc_l1']]==2] = cc_output_c2[[best_k]]$consensusClass %>%
+#                                                     sapply(function(x) glue('2_', x))
+```
+
+<br><br>
+
+#### Independent Component Analysis
+
+Following [this paper's](www.journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1002367) guidelines:
+
+0. Run PCA and keep enough components to explain 60% of the variance
+
+1. Run ICA with that same number of nbComp as principal components kept to then filter them
+
+2. Select components with kurtosis > 3
+
+3. Assign genes to clusters with FDR<0.01 using the fdrtool package
+
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+ICA_output = datExpr_redDim %>% runICA(nbComp=ncol(datExpr_redDim), method='JADE')
+signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
+ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F)$qval<0.01) %>% data.frame
+ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
+
+clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+ICA_clusters_names = colnames(ICA_clusters)
+for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+
+clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
+```
+
+Leaves ALL observations without cluster!
+```{r, fig.width=12}
+ICA_clusters %>% rowSums %>% table
+
+# ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2, Var1)) + 
+#   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
+#   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
+```
+
+#### WGCNA
+
+The soft R-squared value starts in 0.5 but then becomes tiny and needs a power of over 200 to recover. Taking power=1
+
+```{r, warning=FALSE}
+best_power = datExpr_redDim %>% t %>% pickSoftThreshold(powerVector = seq(1, 500, by=50))
+network = datExpr_redDim %>% t %>% blockwiseModules(power=1, numericLabels=TRUE)
+clusterings[['WGCNA']] = network$colors
+names(clusterings[['WGCNA']]) = rownames(datExpr_redDim)
+```
+
+It only leaves 39 genes without a cluster but classifies the rest as a single cluster:
+```{r}
+clusterings[['WGCNA']] %>% table
+```
+
+#### Gaussian Mixture Models with hard thresholding
+
+The lowest BIC is achieved at 14 GM
+
+```{r}
+n_clust = datExpr_redDim %>% Optimal_Clusters_GMM(max_clusters=40, criterion='BIC', plot_data=FALSE)
+plot(n_clust, type='l', main='Bayesian Information Criterion to choose number of clusters')
+best_k = 14
+gmm = datExpr_redDim %>% GMM(best_k)
+clusterings[['GMM']] = gmm$Log_likelihood %>% apply(1, which.max)
+```
+
+Plot of clusters with their centroids in gray
+```{r}
+gmm_points = rbind(datExpr_redDim, setNames(data.frame(gmm$centroids), names(datExpr_redDim)))
+gmm_labels = c(clusterings[['GMM']], rep(NA, best_k)) %>% as.factor
+ggplotly(gmm_points %>% ggplot(aes(x=PC1, y=PC2, color=gmm_labels)) + geom_point() + theme_minimal())
+```
+<br>
+
+```{r, warning=FALSE}
+# Clean up the environment a bit
+rm(wss, datExpr_k_means, h_clusts, cc_output, cc_output_c1, cc_output_c2, best_k, ICA_output, 
+   ICA_clusters_names, signals_w_kurtosis, n_clust, gmm, gmm_points, gmm_labels, network, 
+   best_power, c, manual_clusters, manual_clusters_data, c1_sd, c2_sd, c1_mean, c2_mean, 
+   gmm_c1_sd, gmm_c2_sd,gmm_c1_sd, gmm_c1_mean, gmm_c2_mean, p1, p2, pca_data_projection, dend_meta, 
+   plot_gaussians, plot_points, n_clusters, viridis_score_cols, gg_colour_hue, create_viridis_dict)
+```
+
+### Compare clusterings
+
+Using Adjusted Rand Index:
+
+* Clusterings seem to give very different results and none resemble the SFARI scores
+
+* K-means and Hierarchical clustering and GMM are the only ones that are similar between them
+
+```{r, fig.width = 12}
+cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
+for(i in 1:(length(clusterings))){
+  cluster1 = as.factor(clusterings[[i]])
+  for(j in (i):length(clusterings)){
+    cluster2 = as.factor(clusterings[[j]])
+    cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
+  }
+}
+colnames(cluster_sim) = names(clusterings)
+rownames(cluster_sim) = colnames(cluster_sim)
+
+cluster_sim = cluster_sim %>% as.matrix %>% round(2)
+heatmap.2(x = cluster_sim, Rowv = FALSE, Colv = FALSE, dendrogram = 'none', 
+          cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
+          cexRow = 1, cexCol = 1, margins = c(7,7))
+ 
+
+rm(i, j, cluster1, cluster2, cluster_sim)
+```
+
+### Scatter plots
+
+* All clusterings consider only the 1st component
+
+* WGCNA doesn't work well (classifies almost everything as a single class)
+
+* SFARI genes seem to be everywhere (perhaps a bit more concentrated in low PC1 values)
+
+* 1st PC seems to reflect the average level of expression of the genes
+```{r}
+plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
+              mutate(ID = rownames(.),                               k_means = as.factor(clusterings[['km']]),
+                hc = as.factor(clusterings[['hc']]),                 cc_l1 = as.factor(clusterings[['cc_l1']]),
+                #cc_l2 = as.factor(clusterings[['cc_l2']]),          ica = as.factor(clusterings[['ICA_min']]),
+                n_ica = as.factor(rowSums(ICA_clusters)),            gmm = as.factor(clusterings[['GMM']]),
+                #gmm_2 = as.factor(clusterings[['GMM_2']]),          
+                wgcna = as.factor(clusterings[['WGCNA']]),    
+                #manual = as.factor(clusterings[['Manual']]),         manual_mean = as.factor(clusterings[['Manual_mean']]),
+                #manual_sd = as.factor(clusterings[['Manual_sd']]),   
+                SFARI = as.factor(clusterings[['SFARI_score']]),
+                SFARI_bool = as.factor(clusterings[['SFARI_bool']]), syndromic = as.factor(clusterings[['syndromic']])) %>%
+              bind_cols(DE_info[DE_info$ID %in% rownames(datExpr_redDim),]) %>% 
+              mutate(avg_expr = log2(rowMeans(datExpr_backup)+1)[rownames(datExpr_backup) %in% rownames(datExpr_redDim)])
+rownames(plot_points) = plot_points$ID
+```
+
+```{r, warning=FALSE, fig.width = 12, fig.height=8}
+selectable_scatter_plot(plot_points, plot_points)
+```
