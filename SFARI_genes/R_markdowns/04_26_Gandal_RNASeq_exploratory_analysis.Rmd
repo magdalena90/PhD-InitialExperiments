@@ -1,0 +1,108 @@
+---
+title: 'Gandal RNASeq Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+Load raw data, annotate probes using biomaRt and load SFARI genes
+```{r}
+# Load csvs
+datExpr = read.csv('./../Gandal/RNAseq/raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+datMeta = read.csv('./../raw_data/RNAseq_ASD_datMeta.csv')
+SFARI_genes = read_csv('./../working_data/SFARI_genes_01-15-2019.csv')
+
+# Make sure datExpr and datMeta columns/rows match
+rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
+if(!all(colnames(datExpr) == rownames(datMeta))){
+  print('Columns in datExpr don\'t match the rowd in datMeta!')
+}
+
+# Annotate probes
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+datProbes$length = datProbes$end_position-datProbes$start_position
+
+# Group brain regions by lobes
+datMeta$Brain_Region = as.factor(datMeta$Region)
+datMeta$Brain_lobe = 'Occipital'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA4_6', 'BA9', 'BA24', 'BA44_45')] = 'Frontal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA3_1_2_5', 'BA7')] = 'Parietal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA41_42_22')] = 'Temporal'
+datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
+
+#################################################################################
+# FILTERS:
+
+# 1 Filter probes with start or end position missing (filter 5)
+# These can be filtered without probe info, they have weird IDS that don't start with ENS
+to_keep = !is.na(datProbes$length)
+datProbes = datProbes[to_keep,]
+datExpr = datExpr[to_keep,]
+rownames(datProbes) = datProbes$ensembl_gene_id
+
+# 2. Filter samples from ID AN03345 (filter 2)
+to_keep = (datMeta$Subject_ID != 'AN03345')
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+# 3. Filter samples with rowSums <= 40 (at least half of the samples without any expression)
+to_keep = rowSums(datExpr)>40
+datExpr = datExpr[to_keep,]
+datProbes = datProbes[to_keep,]
+
+#################################################################################
+# Annotate SFARI genes
+
+# Get ensemble IDS for SFARI genes
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+
+gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                   values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                   mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                   dplyr::select('ID', 'gene-symbol')
+
+SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+
+#################################################################################
+# Add functional annotation to genes from GO
+
+GO_annotations = read.csv('./../working_data/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+
+datExpr_backup = datExpr
+
+rm(getinfo, to_keep, gene_names, mart)
+```
+
+
+
+
+
