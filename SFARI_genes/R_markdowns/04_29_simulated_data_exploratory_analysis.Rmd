@@ -1,0 +1,171 @@
+---
+title: 'Simulated Data Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse) ; library(plotly) ; library(reshape2)
+library(DESeq2)
+
+load('./../Data/Gandal_RNASeq.RData')
+```
+
+### Problem with $log_2$ transformation
+
+Can underestimate variance of genes with a high level of expression
+
+**Experiment:** Generate data with different properties to see how the transformation affects the variance
+
+#### Generating the dataset
+
+The gene expression grouped by SFARI could be approximated by a logNormal distribution ... kind of...
+
+```{r, warning=FALSE}
+all_points = datExpr %>% mutate('ID' = rownames(datExpr)) %>% left_join(SFARI_genes, by='ID') %>%
+            filter(!is.na(`gene-score`)) %>% mutate(`gene-score` = as.factor(`gene-score` )) %>% 
+            dplyr::select(c(colnames(datExpr), `gene-score`)) %>% melt
+
+ggplotly(ggplot(all_points, aes(value, group=`gene-score`, fill=`gene-score`, color=`gene-score`)) + 
+         geom_density(alpha=0.3, color=NA) + scale_x_continuous(trans='log2') + theme_minimal() +
+         ggtitle('Gene expression grouped by SFARI score'))
+```
+
+```{r}
+generate_logNormal_samples = function(SFARI_score, m, b){
+  datExpr_score = datExpr %>% filter(rownames(datExpr) %in% SFARI_genes$ID[SFARI_genes$`gene-score`==SFARI_score])
+  score_row_means = log2(datExpr_score+1) %>% rowMeans
+  normal_samples = rnorm(nrow(datExpr_score), mean(score_row_means), sd(score_row_means))
+  logNormal_samples = data.frame('' ,''=2^normal_samples)
+
+  return(logNormal_samples)
+}
+
+datExpr_mean_var = data.frame('ID' = rownames(datExpr), 'mean'=rowMeans(datExpr), 'sd'=apply(datExpr,1,sd))
+linReg = lm(sd~mean, data=datExpr_mean_var)
+intercept = linReg$coefficients[[1]]
+slope = linReg$coefficients[[2]]
+
+print(paste0('The linear regression between mean and standard deviation for the original data has an intercept of ', intercept, ' and a slope of ', slope))
+
+
+for(score in seq(1,6)){
+  
+}
+
+rm(linReg, intercept, slope)
+```
+
+
+### Problem with logFC
+
+**"A disadvantage and serious risk of using fold change in this setting is that it is biased and may misclassify differentially expressed genes with large differences (B − A) but small ratios (B/A), leading to poor identification of changes at high expression levels"**. This is a big problem with the SFARI genes because they have very high expression levels, especially the highest scores, so they are the most affected by this.
+
+**Experiment:** Translate the dataset 10 units at a time and see how the logFC values change
+
+- Used only SFARI genes to make the calculations faster
+
+- The adjusted p-value is not affected by the gene expression of the dataset but the logFC is. The bigger the translation, the smaller the number of genes with a significant logFC
+
+```{r, warning=FALSE, message=FALSE, fig.width=10}
+get_logFC = function(datExpr, trans){
+  
+  datExpr_SFARI = datExpr %>% filter(rownames(datExpr) %in% SFARI_genes$ID)
+  rownames(datExpr_SFARI) = rownames(datExpr)[rownames(datExpr) %in% SFARI_genes$ID]
+  datExpr_translated = datExpr_SFARI + 10*trans
+  datProbes_SFARI = datProbes %>% filter(rownames(datExpr) %in% SFARI_genes$ID)
+  counts = as.matrix(datExpr_translated)
+  rowRanges = GRanges(datProbes_SFARI$chromosome_name,
+                      IRanges(datProbes_SFARI$start_position, width=datProbes_SFARI$length),
+                      strand=datProbes_SFARI$strand,
+                      feature_id=datProbes_SFARI$ensembl_gene_id)
+  
+  se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+  ddsSE = DESeqDataSet(se, design =~Diagnosis_)
+  
+  dds = DESeq(ddsSE)
+  DE_info = results(dds) %>% data.frame %>% rownames_to_column(var = 'ID') %>%
+            mutate('logFC'=log2FoldChange, 'translation'=10*trans) %>% 
+            dplyr::select(ID, logFC, padj, translation)
+  
+  return(DE_info)
+}
+
+logFC_results = get_logFC(datExpr, 0)
+
+for(trans in seq(1,10)){
+  new = get_logFC(datExpr, trans)
+  logFC_results = bind_rows(logFC_results, new)
+}
+
+p1 = ggplotly(ggplot(logFC_results, aes(translation, abs(logFC), group=translation, fill=translation)) + 
+              geom_boxplot() + theme_minimal())
+
+p2 = ggplotly(ggplot(logFC_results, aes(translation, padj, group=translation, fill=translation)) + 
+              geom_boxplot() + theme_minimal() + 
+              ggtitle('LogFC (left) and adj p-val (right) for different translations of the data'))
+
+subplot(p1, p2, nrows=1)
+
+significant = logFC_results %>% filter(abs(logFC)>log2(1.2) & padj<0.05) %>%  group_by(translation) %>% tally
+
+ggplotly(ggplot(significant, aes(translation, n, fill=translation)) + geom_bar(stat='identity') +
+         theme_minimal() + ggtitle('Number of DE genes for each translation'))
+
+rm(new, p1, p2, logFC_results, significant)
+```
+
+### Replicate the behaviour for the different SFARI scores
+
+The gene expression grouped by SFARI could be approximated by a logNormal distribution ... kind of...
+
+```{r, warning=FALSE}
+all_points = datExpr %>% mutate('ID' = rownames(datExpr)) %>% left_join(SFARI_genes, by='ID') %>%
+            filter(!is.na(`gene-score`)) %>% mutate(`gene-score` = as.factor(`gene-score` )) %>% 
+            dplyr::select(c(colnames(datExpr), `gene-score`)) %>% melt
+
+ggplotly(ggplot(all_points, aes(value, group=`gene-score`, fill=`gene-score`, color=`gene-score`)) + 
+         geom_density(alpha=0.3, color=NA) + scale_x_continuous(trans='log2') + theme_minimal() +
+         ggtitle('Gene expression grouped by SFARI score'))
+
+```
+
+<!-- Using just the means of each row instead of the whole information seems to preserve the structure seen above and it makes the distributions a bit smoother. -->
+<!-- ```{r, warning=FALSE} -->
+<!-- row_means = data.frame('ID' = rownames(datExpr), 'row_means'=rowMeans(datExpr)) %>%  -->
+<!--             left_join(SFARI_genes, by='ID') %>% dplyr::select(ID, row_means, `gene-score`) %>% -->
+<!--             filter(!is.na(`gene-score`)) %>% mutate(`gene-score` = as.factor(`gene-score` )) -->
+
+<!-- ggplotly(ggplot(row_means, aes(row_means, group=`gene-score`, fill=`gene-score`, color=`gene-score`)) +  -->
+<!--          geom_density(alpha=0.3, color=NA) + scale_x_continuous(trans='log2') + theme_minimal() + -->
+<!--          ggtitle('Mean gene expression grouped by SFARI score')) -->
+
+<!-- table(row_means$`gene-score`) -->
+<!-- ``` -->
+<!-- Both groups of Diagnosis could be approximated by a logNormal distribution for each SFARI score as well -->
+<!-- ```{r, warning=FALSE} -->
+<!-- ASD_CTL_points = datMeta %>% mutate('variable'=paste0('X',datMeta$Dissected_Sample_ID)) %>% -->
+<!--                  dplyr::select(variable, Diagnosis_) %>% right_join (all_points, by='variable') -->
+
+<!-- ggplotly(ggplot(ASD_CTL_points, aes(value, group=Diagnosis_, fill=Diagnosis_, color=Diagnosis_)) +  -->
+<!--          geom_density(alpha=0.3, color=NA) + scale_x_continuous(trans='log2') + theme_minimal() + -->
+<!--          ggtitle('Gene expression grouped by Diagnosis for each SFARI score') + facet_wrap(~`gene-score`, ncol=2)) -->
+<!-- ``` -->
+
+<!-- #### Generate artificial distributions for ASD and CTL for each SFARI score -->
+
+<!-- - Transform the data into logarithmic scale -->
+<!-- - Calculate the mean and variance of each Diagnosis and SFARI score group -->
+<!-- - Generate a new dataset with random samples selected from these distributions -->
+
+<!-- ```{r} -->
+<!-- log2(datExpr+1) -->
+<!-- ``` -->
+
+
+
+
+
