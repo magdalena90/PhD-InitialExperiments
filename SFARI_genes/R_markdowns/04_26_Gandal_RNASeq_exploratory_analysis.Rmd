@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, include=FALSE}
-setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
 
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
 library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
@@ -227,11 +227,11 @@ rm(p1, p2)
 
 There is heterocedasticity in the data, but the variance increases at a lower rate than the mean, so the $log_2$ transformation may affect the variance
 ```{r, warning=FALSE, fig.width=10}
-ggplotly(ggplot(ASD_vs_CTL, aes(mean+1, sd+1)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+ggplot(ASD_vs_CTL, aes(mean+1, sd+1)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
          scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
          scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + 
            ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
-         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal())
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
 ```
 
 #### Difference between Diagnosis by score
@@ -290,10 +290,78 @@ rm(p1, p2)
 
 There is still heterocedasticity in the data, since the variance increased at a lower rate than the mean, by applying $log_2$ transformation to the data, the relation between mean and variance inverted
 ```{r, warning=FALSE, fig.width=10}
-ggplotly(ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
          scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
            ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
-         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal())
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
+```
+
+#### Difference between Diagnosis by score
+
+- The higher the SFARI score, the smaller the difference between the level of expression between Autism and Control
+
+- The second plot is the same as with the raw data, but this time it agrees with the left plot
+
+```{r, fig.width=10, warning=FALSE}
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(logFC), fill=Group)) + 
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+### Boxplots for vst normalised data
+
+#### Mean and Standard deviation by score
+
+- The higher the SFARI score, the higher the mean **but** the lower the standard deviation (!)
+
+```{r, fig.width=10, warning=FALSE}
+
+counts = as.matrix(datExpr)
+rowRanges = GRanges(datProbes$chromosome_name,
+                    IRanges(datProbes$start_position, width=datProbes$length),
+                    strand=datProbes$strand,
+                    feature_id=datProbes$ensembl_gene_id)
+
+se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta)
+dds = DESeqDataSet(se, design =~Diagnosis_)
+dds = estimateSizeFactors(dds)
+vst_output = vst(dds)
+datExpr_vst = assay(vst_output)
+
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr_vst)
+
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+```{r, warning=FALSE, fig.width=10}
+ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+           ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
 ```
 
 #### Difference between Diagnosis by score
@@ -328,7 +396,7 @@ rm(p1, p2)
 
   - The higher the level of expression
 
-  - The higher the difference between Autism and Control gene expression levels, but only in raw data
+  - The higher the difference between Autism and Control gene expression levels, but only in raw data (probably because of heteroscedasticity)
   
   - The lower the log Fold Change
   

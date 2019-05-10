@@ -1,0 +1,344 @@
+---
+title: 'Voineagu Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
+library(biomaRt) ; library(lumi)
+library(AnnotationDbi) ; library(illuminaHumanv4.db) ; library(samr)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+## Normalised dataset
+```{r, warning=FALSE, message=FALSE}
+
+if(!file.exists('./../Data/Voineagu_normalised.RData')){
+  
+  # Download and load Microarray_ASD_Voineagu_normalized.RData
+  datMeta$Disease.status = datMeta$A.C
+  
+  # Perform Differential Expression Analysis
+  SAM_fit = SAM(as.matrix(datExpr), as.factor(datMeta$Disease.status), resp.type = 'Two class unpaired', 
+                geneid = rownames(datExpr), random.seed = 1234, logged2 = TRUE, fdr.output = 1)
+  genes_up = SAM_fit$siggenes.table$genes.up %>% data.frame
+  genes_down = SAM_fit$siggenes.table$genes.lo %>% data.frame
+  DE_info = genes_up %>% bind_rows(genes_down)
+  
+  # Load SFARI information
+  SFARI_genes = read_csv('./../../Gandal/RNAseq/working_data/SFARI_genes_01-15-2019.csv')
+  ilmn_gene_map = mapIds(illuminaHumanv4.db, key=rownames(datExpr), 
+                         column=c('SYMBOL'), keytype='PROBEID', multiVals='filter')
+  SFARI_genes = data.frame('ID'=names(ilmn_gene_map), 'gene-symbol'=unname(ilmn_gene_map)) %>%
+                 right_join(SFARI_genes, by=c('gene.symbol'='gene-symbol'))
+  
+  # Add neuronal annotations
+  GO_annotations = read.csv('./../../Gandal/RNAseq/working_data/genes_GO_annotations.csv')
+  GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+                distinct(ensembl_gene_id) %>%
+                mutate('Neuronal' = 1)
+  
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL', dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org')
+  ensembl_gene_map = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('ensembl_gene_id'), 
+                     values=GO_neuronal$ensembl_gene_id, mart=mart)
+  ensembl_ilmn_gene_map = data.frame('ID' = names(ilmn_gene_map), 'gene.symbol'=unname(ilmn_gene_map)) %>% 
+                          full_join(ensembl_gene_map, by=c('gene.symbol'='hgnc_symbol'))
+  
+  GO_neuronal = GO_neuronal %>% left_join(ensembl_ilmn_gene_map, by='ensembl_gene_id') %>%
+                filter(!is.na(ID))
+  
+  save(datExpr, datMeta, GO_neuronal, SFARI_genes, DE_info, file='./../Data/Voineagu_normalised.RData')
+  
+} else load('./../Data/Voineagu_normalised.RData')
+
+datExpr_backup = datExpr
+
+DE_info = DE_info %>% mutate('logFC'= Fold.Change, 'ID' = Gene.Name)
+
+datMeta = datMeta %>% mutate('Diagnosis_' = ifelse(A.C=='A','autism','control'))
+
+```
+
+Number of genes and samples:
+```{r}
+dim(datExpr)
+```
+<br>
+
+Gene count by SFARI score of remaining genes:
+```{r}
+table(SFARI_genes$`gene-score`)
+```
+<br>
+
+Relation between SFARI scores and Neuronal functional annotation:
+
+```{r, warning=FALSE}
+Neuronal_SFARI = data.frame('ID'=rownames(datExpr), 'Neuronal'=rownames(datExpr) %in% GO_neuronal$ID) %>%
+                 left_join(SFARI_genes, by='ID')
+
+tbl = table(Neuronal_SFARI$`gene-score`, Neuronal_SFARI$Neuronal, useNA='ifany') %>% t %>% as.data.frame.matrix
+rownames(tbl) = c('Non-Neuronal','Neuronal')
+tbl
+
+tbl = round(sweep(tbl, 2, colSums(tbl), `/`)*100, 2)
+tbl
+
+rm(Neuronal_SFARI, tbl)
+```
+
+<br><br>
+
+### Boxplots
+
+#### Mean and Standard Deviation by score
+
+```{r, fig.width=10, warning=FALSE}
+
+make_ASD_vs_CTL_df = function(datExpr){
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='autism'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='control'))
+  
+  ASD_vs_CTL = data.frame('ID'=as.character(rownames(datExpr)),
+                          'mean' = rowMeans(datExpr), 'sd' = apply(datExpr, 1, sd),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean, sd, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('Neuronal'=ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'))
+  
+  ASD_vs_CTL_SFARI = ASD_vs_CTL %>% filter(!is.na(`gene-score`)) %>% 
+                     mutate(Group = as.character(`gene-score`)) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_Neuro = ASD_vs_CTL %>% mutate(Group = Neuronal) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_all = ASD_vs_CTL %>% mutate(Group = 'All') %>% dplyr::select(-c(Neuronal,`gene-score`))
+  
+  ASD_vs_CTL_together = bind_rows(ASD_vs_CTL_SFARI, ASD_vs_CTL_Neuro, ASD_vs_CTL_all) %>% 
+                        mutate(Group = ordered(Group, levels=c('1','2','3','4','5','6',
+                                                               'Neuronal','Non-Neuronal','All'))) %>%
+                        left_join(DE_info, by='ID')
+  
+  return(ASD_vs_CTL_together)
+}
+
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
+
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() + 
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+The relation doesn't seem to be completely linear, but close to.
+```{r, warning=FALSE, fig.width=10}
+ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + 
+           ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
+```
+
+#### Difference between Diagnosis by score
+
+```{r, fig.width=10, warning=FALSE}
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL[complete.cases(ASD_vs_CTL),], aes(Group, abs(as.numeric(logFC)), fill=Group)) + 
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+## Batch corrected dataset
+```{r, warning=FALSE, message=FALSE}
+
+if(!file.exists('./../Data/Voineagu_combat.RData')){
+  
+  # Download and load Microarray_ASD_chow_normalized_CR_cleaned
+  datMeta$Disease.status = datMeta$A.C
+  
+  # Perform Differential Expression Analysis
+  SAM_fit = SAM(as.matrix(datExpr), as.factor(datMeta$Disease.status), resp.type = 'Two class unpaired', 
+                geneid = rownames(datExpr), random.seed = 1234, logged2 = TRUE, fdr.output = 1)
+  genes_up = SAM_fit$siggenes.table$genes.up %>% data.frame
+  genes_down = SAM_fit$siggenes.table$genes.lo %>% data.frame
+  DE_info = genes_up %>% bind_rows(genes_down)
+  
+  # Load SFARI information
+  SFARI_genes = read_csv('./../../Gandal/RNAseq/working_data/SFARI_genes_01-15-2019.csv')
+  
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+                 dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org') ## Gencode v19
+  
+  gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                     values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                     mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                     dplyr::select('ID', 'gene-symbol')
+  
+  SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+  
+  # Add neuronal annotations
+  GO_annotations = read.csv('./../../Gandal/RNAseq/working_data/genes_GO_annotations.csv')
+  GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+                distinct(ensembl_gene_id) %>%
+                mutate('Neuronal' = 1, 'ID'=ensembl_gene_id)
+  
+  save(datExpr, datMeta, GO_neuronal, SFARI_genes, DE_info, file='./../Data/Voineagu_combat.RData')
+  
+} else load('./../Data/Voineagu_combat.RData')
+
+datExpr_backup = datExpr
+
+DE_info = DE_info %>% mutate('logFC'= Fold.Change, 'ID' = Gene.Name)
+
+datMeta = datMeta %>% mutate('Diagnosis_' = ifelse(A.C=='A','autism','control'))
+
+```
+
+Number of genes and samples:
+```{r}
+dim(datExpr)
+```
+
+<br>
+
+Gene count by SFARI score of remaining genes:
+```{r}
+table(SFARI_genes$`gene-score`)
+```
+
+<br>
+
+Relation between SFARI scores and Neuronal functional annotation:
+
+```{r, warning=FALSE}
+Neuronal_SFARI = data.frame('ID'=rownames(datExpr), 'Neuronal'=rownames(datExpr) %in% GO_neuronal$ID) %>%
+                 left_join(SFARI_genes, by='ID')
+
+tbl = table(Neuronal_SFARI$`gene-score`, Neuronal_SFARI$Neuronal, useNA='ifany') %>% t %>% as.data.frame.matrix
+rownames(tbl) = c('Non-Neuronal','Neuronal')
+tbl
+
+tbl = round(sweep(tbl, 2, colSums(tbl), `/`)*100, 2)
+tbl
+
+rm(Neuronal_SFARI, tbl)
+```
+
+<br><br>
+
+### Boxplots
+
+#### Mean and Standard Deviation by score
+
+```{r, fig.width=10, warning=FALSE}
+
+make_ASD_vs_CTL_df = function(datExpr){
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='autism'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='control'))
+  
+  ASD_vs_CTL = data.frame('ID'=as.character(rownames(datExpr)),
+                          'mean' = rowMeans(datExpr), 'sd' = apply(datExpr, 1, sd),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean, sd, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('Neuronal'=ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'))
+  
+  ASD_vs_CTL_SFARI = ASD_vs_CTL %>% filter(!is.na(`gene-score`)) %>% 
+                     mutate(Group = as.character(`gene-score`)) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_Neuro = ASD_vs_CTL %>% mutate(Group = Neuronal) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_all = ASD_vs_CTL %>% mutate(Group = 'All') %>% dplyr::select(-c(Neuronal,`gene-score`))
+  
+  ASD_vs_CTL_together = bind_rows(ASD_vs_CTL_SFARI, ASD_vs_CTL_Neuro, ASD_vs_CTL_all) %>% 
+                        mutate(Group = ordered(Group, levels=c('1','2','3','4','5','6',
+                                                               'Neuronal','Non-Neuronal','All'))) %>%
+                        left_join(DE_info, by='ID')
+  
+  return(ASD_vs_CTL_together)
+}
+
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
+
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() + 
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+```{r, warning=FALSE, fig.width=10}
+ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + 
+           ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
+```
+
+#### Difference between Diagnosis by score
+
+```{r, fig.width=10, warning=FALSE}
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL[complete.cases(ASD_vs_CTL),], aes(Group, abs(as.numeric(logFC)), fill=Group)) + 
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+
