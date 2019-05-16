@@ -9,12 +9,84 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) #; library(plotlyutils)
+library(venneuler)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
 ```{r, warning=FALSE}
 
 load('./../Data/Gandal_RNASeq.RData')
 
 DE_info_paper = read.csv('./../Data/Gandal_paper_DGE.csv')[,1:7] %>% mutate('ID'=X)
 
-DE_info_all = DE_info %>% left_join(DE_info_paper, by='ID')
+DE_info_all = DE_info %>% left_join(DE_info_paper, by='ID') %>% 
+              filter(complete.cases(.)) %>%
+              left_join(SFARI_genes, by='ID') %>%
+              mutate(`gene-score` = ifelse(is.na(`gene-score`), 
+                                           ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'), 
+                                           `gene-score`))
 
+```
+
+#### Log fold change comparison
+
+- The signs are in the opposite direction (took CTL instead of ASD as 1? maybe it was me ... I think not, but could have been)
+
+- 92% of the genes are classified the same in both analysis
+
+```{r, warning=FALSE}
+
+ggplotly(DE_info_all %>% mutate('logFC_me' = logFC, 'logFC_Gandal'=All.logFC) %>% 
+         ggplot(aes(logFC_me, logFC_Gandal)) + 
+         geom_point(alpha=0.3, aes(id=ID, fill=`gene-score`, color=`gene-score`)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         ggtitle(paste0('Corr=',round(cor(DE_info_all$logFC, DE_info_all$All.logFC), 2))) +
+         geom_abline(slope=-1, color='#808080', size=0.5) + theme_minimal() + coord_fixed() + 
+         geom_hline(yintercept=log2(1.5), color='#a6a6a6') + geom_hline(yintercept=-log2(1.5), color='#a6a6a6') +
+         geom_vline(xintercept=log2(1.5), color='#a6a6a6') + geom_vline(xintercept=-log2(1.5), color='#a6a6a6'))
+
+round(table(abs(DE_info_all$logFC)>log2(1.5), abs(DE_info_all$All.logFC)>log2(1.5))/nrow(DE_info_all)*100,1)
+
+```
+
+#### Adjusted p-value comparison
+
+- My adjusted p-value seems to be a lot stricter, could be because I took a larger amount of genes (33K vs 20K)
+
+- 76.4% of the genes are classified the same way in both experiments
+
+```{r, warning=FALSE}
+
+ggplotly(DE_info_all %>% mutate('adj.P.value_me' = adj.P.Val, 'adj.P.value_Gandal'=All.adj.P.Val) %>% 
+         ggplot(aes(adj.P.value_me, adj.P.value_Gandal)) + 
+         geom_point(alpha=0.1, aes(id=ID, fill=`gene-score`, color=`gene-score`)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         ggtitle(paste0('Corr=',round(cor(DE_info_all$adj.P.Val, DE_info_all$All.adj.P.Va), 2))) +
+         geom_abline(color='#808080', size=0.5) + geom_hline(yintercept=0.05, color='#a6a6a6') + 
+         geom_vline(xintercept=0.05, color='#a6a6a6') + theme_minimal())
+
+round(table(DE_info_all$adj.P.Val<0.05, DE_info_all$All.adj.P.Val<0.05)/nrow(DE_info_all)*100,1)
+```
+
+#### Significant genes
+
+- 75.9% of the genes have the same classification in both analysis
+
+- Gandal classifies 
+
+```{r}
+
+DE_info_all = DE_info_all %>% mutate('significant_me' = abs(logFC)>log2(1.5) & adj.P.Val<0.05,
+                                     'significant_Gandal' = abs(All.logFC)<log2(1.5) & adj.P.Val<0.05)
+
+round(table(DE_info_all$significant_me, DE_info_all$significant_Gandal)/nrow(DE_info_all)*100, 1)
 ```
