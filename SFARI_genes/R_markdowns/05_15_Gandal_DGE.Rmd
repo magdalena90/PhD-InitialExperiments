@@ -1,0 +1,20 @@
+---
+title: 'Gandal DGE: me vs article'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE}
+
+load('./../Data/Gandal_RNASeq.RData')
+
+DE_info_paper = read.csv('./../Data/Gandal_paper_DGE.csv')[,1:7] %>% mutate('ID'=X)
+
+DE_info_all = DE_info %>% left_join(DE_info_paper, by='ID')
+
+```

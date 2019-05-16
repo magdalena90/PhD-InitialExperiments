@@ -33,9 +33,11 @@ Filtering criteria:
 
 - Probes that have no expression on at least half of the samples (30197)
 
-```{r}
+- Probes that are present in BrainSpan filtered dataset ()
 
-if(!file.exists('./../Data/Gandal_RNASeq.RData')){
+```{r, warning=FALSE, message=FALSE}
+
+if(!file.exists('./../Data/Gandal_RNASeq_intersect_BrainSpan.RData')){
   
   # Load csvs
   datExpr = read.csv('./../../Gandal/RNAseq/raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
@@ -85,7 +87,12 @@ if(!file.exists('./../Data/Gandal_RNASeq.RData')){
   to_keep = rowSums(datExpr)>40
   datExpr = datExpr[to_keep,]
   datProbes = datProbes[to_keep,]
-
+  
+  # 4. Filter probes that are not in the Gandal filtered dataset
+  to_keep = read.csv('./../Data/Gandal_BrainSpan_probes.csv', sep='')
+  datProbes = datProbes[rownames(datProbes) %in% to_keep$x,]
+  datExpr = datExpr[rownames(datExpr) %in% to_keep$x,]
+  
   #################################################################################
   # DEA using DESeq2
   counts = as.matrix(datExpr)
@@ -126,11 +133,11 @@ if(!file.exists('./../Data/Gandal_RNASeq.RData')){
                 dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
                 mutate('Neuronal' = 1)
   
-  save(datExpr, datMeta, datProbes, GO_neuronal, SFARI_genes, DE_info, file='./../Data/Gandal_RNASeq.RData')
+  save(datExpr, datMeta, datProbes, GO_neuronal, SFARI_genes, DE_info, file='./../Data/Gandal_RNASeq_intersect_BrainSpan.RData')
   
   rm(getinfo, to_keep, gene_names, mart, counts, dds, ddsSE, GO_annotations, rowRanges, se)
   
-} else load('./../Data/Gandal_RNASeq.RData')
+} else load('./../Data/Gandal_RNASeq_intersect_BrainSpan.RData')
 
 datExpr_backup = datExpr
 ```
@@ -166,7 +173,7 @@ tbl = table(Neuronal_SFARI$`gene-score`, Neuronal_SFARI$Neuronal, useNA='ifany')
 rownames(tbl) = c('Non-Neuronal','Neuronal')
 tbl
 
-tbl = round(sweep(tbl, 2, colSums(tbl), `/`)*100, 2)
+tbl = round(sweep(tbl, 2, colSums(tbl), `/`)*100, 1)
 tbl
 
 rm(Neuronal_SFARI, tbl)
@@ -239,68 +246,6 @@ ggplot(ASD_vs_CTL, aes(mean+1, sd+1)) + geom_point(alpha=0.1, aes(id=ID, fill=Gr
 - The higher the SFARI score, the bigger the difference between the level of expression between Autism and Control
 
 - The higher the SFARI score, the smaller the log Fold Change between Autism and Control
-
-```{r, fig.width=10, warning=FALSE}
-p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 
-                geom_boxplot() + theme_minimal() + 
-                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
-                scale_fill_manual(values=gg_colour_hue(9)) +
-                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
-
-p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(logFC), fill=Group)) + 
-                geom_boxplot() + theme_minimal() +
-                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
-                scale_fill_manual(values=gg_colour_hue(9)) +
-                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
-
-subplot(p1, p2, nrows=1)
-
-rm(p1, p2)
-```
-
-
-### Boxplots for log transformed data
-
-- Transformation: $log_2(datExpr + 1)$
-
-- Neuronal annotated genes behave most similar to genes with SFARI score 4, 5 and 6
-
-#### Mean and Standard deviation by score
-
-- The higher the SFARI score, the higher the mean **but** the lower the standard deviation (!)
-
-```{r, fig.width=10, warning=FALSE}
-
-ASD_vs_CTL = make_ASD_vs_CTL_df(log2(datExpr+1))
-
-p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, mean, fill=Group)) + 
-              geom_boxplot() + theme_minimal() +
-              scale_fill_manual(values=gg_colour_hue(9)) +
-              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
-
-p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, sd, fill=Group)) + 
-              geom_boxplot() + theme_minimal() +
-              scale_fill_manual(values=gg_colour_hue(9)) +
-              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
-
-subplot(p1, p2, nrows=1)
-
-rm(p1, p2)
-```
-
-There is still heterocedasticity in the data, since the variance increased at a lower rate than the mean, by applying $log_2$ transformation to the data, the relation between mean and variance inverted
-```{r, warning=FALSE, fig.width=10}
-ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
-         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
-           ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
-         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
-```
-
-#### Difference between Diagnosis by score
-
-- The higher the SFARI score, the smaller the difference between the level of expression between Autism and Control
-
-- The second plot is the same as with the raw data, but this time it agrees with the left plot
 
 ```{r, fig.width=10, warning=FALSE}
 p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 

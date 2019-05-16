@@ -1,0 +1,298 @@
+---
+title: 'Gandal RNASeq Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
+library(biomaRt) ; #library(DESeq2)
+library(venneuler)
+library(limma) ; library(edgeR)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+Preprocess dataset using limma and edgeR following the workflow from [RNA-seq analysis is easy as 1-2-3 with limma, Glimma and edgeR](https://bioconductor.org/packages/devel/workflows/vignettes/RNAseq123/inst/doc/limmaWorkflow.html) and [limma's userguide](https://www.bioconductor.org/packages/devel/bioc/vignettes/limma/inst/doc/usersguide.pdf)
+
+- Using limma-trend for differential expression instead of voom because the largest library size to the smallest was less than 3-fold (~2.2)
+
+- Used log transformed data for the DEA
+
+```{r, warning=FALSE, message=FALSE}
+
+if(!file.exists('./../Data/Gandal_RNASeq_limma.RData')){
+  
+  # Load csvs
+  datExpr = read.csv('./../../Gandal/RNAseq/raw_data/RNAseq_ASD_datExpr.csv', row.names=1)
+  datMeta = read.csv('./../../Gandal/RNAseq/raw_data/RNAseq_ASD_datMeta.csv')
+  SFARI_genes = read_csv('./../../Gandal/RNAseq/working_data/SFARI_genes_01-15-2019.csv')
+  
+  # Make sure datExpr and datMeta columns/rows match
+  rownames(datMeta) = paste0('X', datMeta$Dissected_Sample_ID)
+  if(!all(colnames(datExpr) == rownames(datMeta))){
+    print('Columns in datExpr don\'t match the rowd in datMeta!')
+  }
+  
+  #################################################################################
+  # ANNOTATE:
+  
+  # Annotate probes
+  getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+              'end_position','strand','band','gene_biotype','percentage_gc_content')
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+                 dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org') ## Gencode v19
+  datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+  datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+  datProbes$length = datProbes$end_position-datProbes$start_position
+  
+  # Group brain regions by lobes
+  datMeta$Brain_Region = as.factor(datMeta$Region)
+  datMeta$Brain_lobe = 'Occipital'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA4_6', 'BA9', 'BA24', 'BA44_45')] = 'Frontal'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA3_1_2_5', 'BA7')] = 'Parietal'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('BA38', 'BA39_40', 'BA20_37', 'BA41_42_22')] = 'Temporal'
+  datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital'))
+  
+  datMeta$Diagnosis_ = factor(datMeta$Diagnosis_, levels=c('CTL','ASD'))
+  
+  #################################################################################
+  # INITIAL FILTERING:
+  
+  # 1 Filter probes with start or end position missing (filter 5)
+  # These can be filtered without probe info, they have weird IDS that don't start with ENS
+  to_keep = !is.na(datProbes$length)
+  datProbes = datProbes[to_keep,]
+  datExpr = datExpr[to_keep,]
+  rownames(datProbes) = datProbes$ensembl_gene_id
+  
+  # 2. Filter samples from ID AN03345 (filter 2)
+  to_keep = (datMeta$Subject_ID != 'AN03345')
+  datMeta = datMeta[to_keep,]
+  datExpr = datExpr[,to_keep]
+  
+  #################################################################################
+  # CREATE DGELIST OBJECT:
+  dge = DGEList(counts=datExpr, samples=datMeta, genes=datProbes)
+  
+  # Filter low counts (45903):
+  to_keep = filterByExpr(dge)
+  dge = dge[to_keep, , keep.lib.sizes=FALSE]
+  
+  # Normalise using TMM (Trimmed mean of M-values):
+  dge = calcNormFactors(dge)
+  
+
+  #################################################################################
+  # DIFFERENTIAL EXPRESSION:
+  
+  # Check if limma-trend is the correct approach (instead of voom)
+  if(max(dge$samples$lib.size)/min(dge$samples$lib.size)>3){
+    print('Should use voom instead because the library size ratios are too big')
+  }
+  
+  # Define objective variable
+  design = model.matrix(~Diagnosis_, dge$samples)
+  
+  # Transform data to log scale
+  logCPM = cpm(dge, log=TRUE, prior.count=3)
+  
+  # Perform DEA
+  fit = lmFit(logCPM, design)
+  fit = eBayes(fit, trend=TRUE)
+  DE_info = topTable(fit, coef=ncol(design), number=nrow(dge$counts))
+  DE_info = DE_info %>% rownames_to_column(var = 'ID')
+  
+  # # VOOM:
+  # # Remove heterocedasticity from the data
+  # v = voom(dge, design, plot=TRUE)
+  # 
+  # # Perform DEA
+  # vfit = lmFit(v, design)
+  # vfit = contrasts.fit(vfit, contrasts=contr.matrix) # don't understand this much ...
+  # efit = eBayes(vfit)
+  # plotSA(efit, main='Final model: Mean-variance trend')
+  # 
+  # fit = lmFit(logCPM, design)
+  # fit = eBayes(fit, trend=TRUE)
+  # topTable(fit, coef=ncol(design))
+  
+  #################################################################################
+  # Annotate SFARI genes
+  
+  # Get ensemble IDS for SFARI genes
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+                 dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org') ## Gencode v19
+  
+  gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                     values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                     mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                     dplyr::select('ID', 'gene-symbol')
+  
+  SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+  
+  #################################################################################
+  # Add functional annotation to genes from GO
+  
+  GO_annotations = read.csv('./../../Gandal/RNAseq/working_data/genes_GO_annotations.csv')
+  GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+                mutate('ID' = as.character(ensembl_gene_id)) %>% 
+                dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+                mutate('Neuronal' = 1)
+  
+  datExpr = logCPM
+  datMeta = dge$samples
+  datProbes = dge$genes
+  
+  save(datExpr, datMeta, datProbes, GO_neuronal, SFARI_genes, DE_info, dge, file='./../Data/Gandal_RNASeq_limma.RData')
+  
+  rm(getinfo, to_keep, gene_names, mart, GO_annotations, design, fit, logCPM)
+  
+} else load('./../Data/Gandal_RNASeq_limma.RData')
+
+datExpr_backup = datExpr
+```
+
+Number of genes and samples:
+```{r}
+dim(datExpr)
+```
+<br>
+
+Gene count by SFARI score of remaining genes:
+```{r}
+table(SFARI_genes$`gene-score`[SFARI_genes$ID %in% rownames(datExpr)])
+```
+<br>
+
+Gene count by Diagnosis and Brain lobe:
+```{r}
+t(table(datMeta$Brain_lobe, datMeta$Diagnosis_))
+```
+<br>
+
+Relation between SFARI scores and Neuronal functional annotation:
+
+- There is one gene in the SFARI list that has score both 3 and 4
+
+- Higher SFARI scores have a higher percentage of genes with neuronal functional annotation (makes sense)
+```{r, warning=FALSE}
+Neuronal_SFARI = data.frame('ID'=rownames(datExpr), 'Neuronal'=rownames(datExpr) %in% GO_neuronal$ID) %>%
+                 left_join(SFARI_genes, by='ID')
+
+tbl = table(Neuronal_SFARI$`gene-score`, Neuronal_SFARI$Neuronal, useNA='ifany') %>% t %>% as.data.frame.matrix
+rownames(tbl) = c('Non-Neuronal','Neuronal')
+tbl
+
+tbl = round(sweep(tbl, 2, colSums(tbl), `/`)*100, 1)
+tbl
+
+rm(Neuronal_SFARI, tbl)
+```
+<br><br>
+
+#### Mean and Standard deviation by score
+
+- The higher the SFARI score, the higher the mean **but** the lower the standard deviation
+
+```{r, fig.width=10, warning=FALSE}
+
+make_ASD_vs_CTL_df = function(datExpr){
+  datExpr_ASD = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_=='ASD'))
+  datExpr_CTL = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Diagnosis_!='ASD'))
+  
+  ASD_vs_CTL = data.frame('ID'=as.character(rownames(datExpr)),
+                          'mean' = rowMeans(datExpr), 'sd' = apply(datExpr, 1, sd),
+                          'mean_ASD'=rowMeans(datExpr_ASD), 'mean_CTL'=rowMeans(datExpr_CTL),
+                          'sd_ASD'=apply(datExpr_ASD,1,sd), 'sd_CTL'=apply(datExpr_CTL,1,sd)) %>%
+               mutate('mean_diff'=mean_ASD-mean_CTL, 'sd_diff'=sd_ASD-sd_CTL) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean, sd, mean_ASD, mean_CTL, mean_diff, sd_ASD, sd_CTL, sd_diff, `gene-score`) %>%
+               mutate('Neuronal'=ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'))
+  
+  ASD_vs_CTL_SFARI = ASD_vs_CTL %>% filter(!is.na(`gene-score`)) %>% 
+                     mutate(Group = as.character(`gene-score`)) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_Neuro = ASD_vs_CTL %>% mutate(Group = Neuronal) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  ASD_vs_CTL_all = ASD_vs_CTL %>% mutate(Group = 'All') %>% dplyr::select(-c(Neuronal,`gene-score`))
+  
+  ASD_vs_CTL_together = bind_rows(ASD_vs_CTL_SFARI, ASD_vs_CTL_Neuro, ASD_vs_CTL_all) %>% 
+                        mutate(Group = ordered(Group, levels=c('1','2','3','4','5','6',
+                                                               'Neuronal','Non-Neuronal','All'))) %>%
+                        left_join(DE_info, by='ID')
+  
+  return(ASD_vs_CTL_together)
+}
+
+ASD_vs_CTL = make_ASD_vs_CTL_df(datExpr)
+
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+Seems like log2 transformation was too stong and the heterodasticity inverted its direction
+```{r, warning=FALSE, fig.width=10}
+ggplot(ASD_vs_CTL, aes(mean, sd)) + geom_point(alpha=0.1, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+           ggtitle(paste0('Corr=',round(cor(ASD_vs_CTL$mean, ASD_vs_CTL$sd), 2))) +
+         geom_smooth(method=lm, se=FALSE, color='#808080', size=0.5) + theme_minimal()
+```
+
+#### Difference between Diagnosis by score
+
+- The higher the SFARI score, the smaller the difference between the level of expression between Autism and Control
+
+```{r, fig.width=10, warning=FALSE}
+p1 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(mean_diff), fill=Group)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(ASD_vs_CTL, aes(Group, abs(logFC), fill=Group)) + 
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Diagnosis') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+### Conclusion
+
+- The higher the SFARI score:
+
+  - The higher the percentage of the genes with Neuronal functional annotation
+
+  - The higher the level of expression
+  
+  - The lower the difference between mean expression between diagnosis
+  
+  - The lower the log Fold Change
+  
+<br>

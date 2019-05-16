@@ -1,0 +1,446 @@
+---
+title: 'BrainSpan Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(plotlyutils)
+library(biomaRt) ; #library(DESeq2) ; library(limma) ; library(cqn)
+library(venneuler)
+library(limma) ; library(edgeR)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+```{r, warning=FALSE, message=FALSE}
+if(!file.exists('./../Data/BrainSpan_raw.RData')){
+  
+  # Load csvs (Downloaded from 'RNA-Seq Gencode v10 summarized to genes' in http://www.brainspan.org/static/download.html)
+  datExpr = read.csv('./../Data/BrainSpan_genes/expression_matrix.csv', header=FALSE)
+  datMeta = read.csv('./../Data/BrainSpan_genes/columns_metadata.csv')
+  geneInfo = read.csv('./../Data/BrainSpan_genes/rows_metadata.csv')
+
+  # Remove index column in datExpr
+  cols = datExpr %>% colnames
+  datExpr = datExpr %>% dplyr::select(-V1)
+  colnames(datExpr) = cols[-length(cols)]
+  
+  # Make sure rows match
+  if(!all(rownames(datExpr) == geneInfo$row_num)){
+   print('Columns in datExpr don\'t match the rows in datMeta!') 
+  }
+  
+  # Assign row names
+  rownames(datMeta) = paste0('V', datMeta$column_num)
+  rownames(datExpr) = geneInfo$ensembl_gene_id
+  
+  # Annotate probes
+  getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+              'end_position','strand','band','gene_biotype','percentage_gc_content')
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+                 dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org') ## Gencode v19
+  datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+  datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
+  datProbes$length = datProbes$end_position-datProbes$start_position
+  
+  # Group brain regions by lobes
+  datMeta$Brain_Region = as.factor(datMeta$structure_acronym)
+  datMeta$Brain_lobe = 'Other'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('Ocx','V1C')] = 'Occipital'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('M1C-S1C','DFC','OFC','VFC','M1C')] = 'Frontal'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('PCx','IPC', 'S1C')] = 'Parietal'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('AMY','MGE','STC','ITC','HIP','TCx','A1C')] = 'Temporal'
+  datMeta$Brain_lobe[datMeta$Brain_Region %in% c('MFC')] = 'Limbic'
+  datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital','Limbic','Other'))
+  # Don't correspond to any lobe: URL, DTH, LGE, STR, CB, CBC, MD, CGE
+
+  #################################################################################
+  # INITIAL FILTERING:
+  
+  # 1 Filter probes with start or end position missing (none)
+  to_keep = !is.na(datProbes$length)
+  datProbes = datProbes[to_keep,]
+  datExpr = datExpr[to_keep,]
+  rownames(datProbes) = datProbes$ensembl_gene_id
+  
+  # 2. Keep only Frontal and Temporal samples to do DEA (filter 301 samples)
+  to_keep = datMeta$Brain_lobe %in% c('Temporal','Frontal')
+  datExpr = datExpr[,to_keep]
+  datMeta = datMeta[to_keep,]
+  datMeta$Brain_lobe = factor(datMeta$Brain_lobe, levels=c('Temporal','Frontal'))
+  
+  # 3. Filter probes with only zeros as entries (filter 2056 probes)
+  to_keep = rowSums(datExpr)>0
+  datProbes = datProbes[to_keep,]
+  datExpr = datExpr[to_keep,]
+  
+  #################################################################################
+  # Annotate SFARI genes
+  
+  SFARI_genes = read_csv('./../../Gandal/RNAseq/working_data/SFARI_genes_01-15-2019.csv')
+  
+  # Get ensemble IDS for SFARI genes
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+                 dataset='hsapiens_gene_ensembl',
+                 host='feb2014.archive.ensembl.org') ## Gencode v19
+  
+  gene_names = getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol'), filters=c('hgnc_symbol'), 
+                     values=SFARI_genes$`gene-symbol`, mart=mart) %>% 
+                     mutate('gene-symbol'=hgnc_symbol, 'ID'=as.character(ensembl_gene_id)) %>% 
+                     dplyr::select('ID', 'gene-symbol')
+  
+  SFARI_genes = left_join(SFARI_genes, gene_names, by='gene-symbol')
+  
+  #################################################################################
+  # Add functional annotation to genes from GO
+  
+  GO_annotations = read.csv('./../../Gandal/RNAseq/working_data/genes_GO_annotations.csv')
+  GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+                mutate('ID' = as.character(ensembl_gene_id)) %>% 
+                dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+                mutate('Neuronal' = 1)
+  
+  save(datExpr, datMeta, datProbes, SFARI_genes, GO_neuronal, file='./../Data/BrainSpan_raw.RData')
+  
+  rm(gene_names, geneInfo, GO_annotations, mart, cols, getinfo, to_keep)
+  
+} else load('./../Data/BrainSpan_raw.RData')
+```
+
+### Visualisations
+
+#### PCA
+
+- MDS takes too long to calculate distances
+
+- There doesn't seem to be a clear pattern for SFARI scores
+
+- Applied log2 transformation to the data before performing pca to help the visualisation: **% variance explained by 1PC changed from 60 to 90%**. This was probably what was happening with Gandal's dataset as well
+
+```{r, warning=FALSE}
+datExpr_pca = prcomp(log2(datExpr+1), scale.=TRUE)
+
+pca_plot = data.frame('ID'=rownames(datExpr), 'PC1'=datExpr_pca$x[,1], 'PC2'=datExpr_pca$x[,2], 
+                      'meanExpr'=rowMeans(log2(datExpr+1)), 'sd' = apply(log2(datExpr+1), 1, sd)) %>%
+           left_join(SFARI_genes, by='ID') %>%
+           mutate(`gene-score` = ifelse(is.na(`gene-score`), 
+                                        ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'), 
+                                        `gene-score`)) %>%
+           dplyr::select(ID, PC1, PC2, `gene-score`, meanExpr, sd)
+
+ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=`gene-score`)) + geom_point(alpha=0.2, aes(id=ID)) + theme_minimal() +
+         xlab(paste0('PC1 (',round(summary(datExpr_pca)$importance[2,1]*100),'%)')) +
+         ylab(paste0('PC2 (',round(summary(datExpr_pca)$importance[2,2]*100),'%)')) +
+         scale_color_manual(values=gg_colour_hue(9)))
+```
+
+91% of the variance of the probes seems to be explained by their mean level of expression
+```{r}
+ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=meanExpr)) + geom_point(alpha=0.5, aes(id=ID)) + theme_minimal() +
+         xlab(paste0('PC1 (',round(summary(datExpr_pca)$importance[2,1]*100),'%)')) +
+         ylab(paste0('PC2 (',round(summary(datExpr_pca)$importance[2,2]*100),'%)')) +
+         scale_colour_viridis())
+```
+
+The second PC seems to reflect the variance of the probe
+```{r}
+ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=sd)) + geom_point(alpha=0.5, aes(id=ID)) + theme_minimal() +
+         xlab(paste0('PC1 (',round(summary(datExpr_pca)$importance[2,1]*100),'%)')) +
+         ylab(paste0('PC2 (',round(summary(datExpr_pca)$importance[2,2]*100),'%)')) +
+         scale_colour_viridis())
+```
+
+#### Mean and SD by SFARI score
+
+```{r, fig.width=10, fig.height=6, warning=FALSE}
+
+ggplotly(pca_plot %>% filter(meanExpr<summary(pca_plot$meanExpr)[5]) %>% 
+         ggplot(aes(meanExpr, color=`gene-score`, fill=`gene-score`)) +
+         geom_histogram(binwidth=0.001, alpha=0.5) + facet_grid(`gene-score`~., scales='free') +
+         theme_minimal() + ggtitle('mean expression for values up to 3rd quantile') +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)))
+
+```
+
+Even after log2 transformation the variance is bigger for higher SFARI scores
+```{r, fig.width=10, warning=FALSE}
+
+make_Frontal_vs_Temporal_df = function(datExpr){
+  datExpr_Frontal = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Brain_lobe=='Frontal'))
+  datExpr_Temporal = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Brain_lobe=='Temporal'))
+  
+  Frontal_vs_Temporal = data.frame('ID'=as.character(rownames(datExpr)),
+                          'mean' = rowMeans(datExpr), 'sd' = apply(datExpr, 1, sd),
+                          'mean_Frontal'=rowMeans(datExpr_Frontal), 'mean_Temporal'=rowMeans(datExpr_Temporal),
+                          'sd_Frontal'=apply(datExpr_Frontal,1,sd), 'sd_Temporal'=apply(datExpr_Temporal,1,sd)) %>%
+               mutate('mean_diff'=mean_Frontal-mean_Temporal, 'sd_diff'=sd_Frontal-sd_Temporal) %>%
+               left_join(SFARI_genes, by='ID') %>%
+               dplyr::select(ID, mean, sd, mean_Frontal, mean_Temporal, mean_diff, sd_Frontal, sd_Temporal, sd_diff, `gene-score`) %>%
+               mutate('Neuronal'=ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'))
+  
+  Frontal_vs_Temporal_SFARI = Frontal_vs_Temporal %>% filter(!is.na(`gene-score`)) %>% 
+                     mutate(Group = as.character(`gene-score`)) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  Frontal_vs_Temporal_Neuro = Frontal_vs_Temporal %>% mutate(Group = Neuronal) %>% dplyr::select(-c(Neuronal,`gene-score`))
+  Frontal_vs_Temporal_all = Frontal_vs_Temporal %>% mutate(Group = 'All') %>% dplyr::select(-c(Neuronal,`gene-score`))
+  
+  Frontal_vs_Temporal_together = bind_rows(Frontal_vs_Temporal_SFARI, Frontal_vs_Temporal_Neuro, Frontal_vs_Temporal_all) %>% 
+                        mutate(Group = ordered(Group, levels=c('1','2','3','4','5','6',
+                                                               'Neuronal','Non-Neuronal','All')))
+  
+  return(Frontal_vs_Temporal_together)
+}
+
+Frontal_vs_Temporal = make_Frontal_vs_Temporal_df(log2(datExpr+1))
+
+p1 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() + 
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+- Correlation and linear model fit only using SFARI and Neuronal genes
+
+- The Mean increases 10x faster than the sd
+
+- There's a weird pattern for the lowest expressed genes. Maybe their sd was topped to mean+n? Because the slope seems to be 1
+
+```{r, warning=FALSE, fig.width=10}
+
+fit = lm(sd ~ mean, data=Frontal_vs_Temporal[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All'),])
+
+ggplotly(ggplot(Frontal_vs_Temporal %>% filter(Group!='All'), aes(mean, sd)) + 
+         geom_point(alpha=0.2, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         scale_y_continuous(trans='log2', labels=scales::number_format(accuracy = 0.001)) + 
+         scale_x_continuous(trans='log2', labels = scales::number_format(accuracy = 0.001)) + 
+         ggtitle(paste0('Corr=',round(cor(Frontal_vs_Temporal$mean[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All')], 
+                                          Frontal_vs_Temporal$sd[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All')]), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))) +
+         geom_abline(color='#808080', size=0.5) + theme_minimal())
+
+```
+
+## Filtering probes with low expression
+
+Threshold: mean expression < 0.005 (8243 probes filtered out)
+
+```{r}
+to_keep = rowMeans(log2(datExpr+1))>0.005
+datExpr = datExpr[to_keep,]
+datProbes = datProbes[to_keep,]
+
+rm(to_keep)
+```
+
+Number of genes and samples:
+```{r}
+dim(datExpr)
+```
+<br>
+
+Gene count by SFARI score of remaining genes:
+```{r}
+table(SFARI_genes$`gene-score`[SFARI_genes$ID %in% rownames(datExpr)])
+```
+<br><br>
+
+### Visualisations
+
+#### PCA
+
+Has exactly the same behaviour as before so didn't include the plots
+<br>
+
+#### Mean and SD by SFARI score
+
+```{r, fig.width=10, warning=FALSE}
+Frontal_vs_Temporal = make_Frontal_vs_Temporal_df(log2(datExpr+1))
+
+p1 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, mean, fill=Group)) + 
+              geom_boxplot() + theme_minimal() + 
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, sd, fill=Group)) + 
+              geom_boxplot() + theme_minimal() +
+              ggtitle('Mean (left) and Standard Deviation (right) by score') +
+              scale_fill_manual(values=gg_colour_hue(9)) +
+              theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+Correlation and lm parameters almost don't change because they were calculated only using SFARI and Neuronal genes
+
+```{r, warning=FALSE, fig.width=10}
+
+fit = lm(sd ~ mean, data=Frontal_vs_Temporal[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All'),])
+
+ggplotly(ggplot(Frontal_vs_Temporal %>% filter(Group!='All'), aes(mean, sd)) + 
+         geom_point(alpha=0.2, aes(id=ID, fill=Group, color=Group)) +
+         scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +  
+         scale_y_continuous(trans='log2', labels=scales::number_format(accuracy = 0.01)) + 
+         scale_x_continuous(trans='log2', labels = scales::number_format(accuracy = 0.01)) + 
+         ggtitle(paste0('Corr=',round(cor(Frontal_vs_Temporal$mean[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All')], 
+                                          Frontal_vs_Temporal$sd[!Frontal_vs_Temporal$Group %in% c('Non-Neuronal','All')]), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))) +
+         geom_abline(color='#808080', size=0.5) + theme_minimal())
+
+```
+
+## DE between brain lobes
+
+```{r}
+
+mod = model.matrix(~Brain_lobe, data=datMeta)
+corfit = duplicateCorrelation(datExpr, mod, block=datMeta$donor_id)
+lmfit = lmFit(datExpr, design=mod, block=datMeta$donor_id, correlation=corfit$consensus)
+
+fit = eBayes(lmfit, trend=T, robust=T)
+top_genes = topTable(fit, coef=2, number=nrow(datExpr))
+DE_info = top_genes[match(rownames(datExpr), rownames(top_genes)),] %>% rownames_to_column('ID')
+
+if(!file.exists('./../Data/BrainSpan_filtered.RData')){
+  save(datExpr, datMeta, datProbes, SFARI_genes, GO_neuronal, file='./../Data/BrainSpan_filtered.RData')
+}
+
+rm(mod, corfit, lmfit, fit, top_genes)
+```
+
+The difference in mean is smaller the higher the SFARI score but the logFC is 
+```{r, warning=FALSE, fig.width=10}
+Frontal_vs_Temporal = make_Frontal_vs_Temporal_df(datExpr) %>% left_join(DE_info, by='ID')
+
+p1 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, abs(mean_diff), fill=Group)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Brain region') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+p2 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, abs(logFC), fill=Group)) + 
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in mean (left) and log Fold Change (right) by Brain region') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+
+
+
+
+
+
+<!-- ### Boxplots for original data -->
+
+<!-- #### Mean and Standard Deviation by score -->
+
+<!-- - The higher the SFARI score, the higher the mean and the standard deviation except for the sd of SFARI scores 4 and 5 -->
+<!-- ```{r, fig.width=10, warning=FALSE} -->
+
+<!-- make_Frontal_vs_Temporal_df = function(datExpr){ -->
+<!--   datExpr_Frontal = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Brain_lobe=='Frontal')) -->
+<!--   datExpr_Temporal = datExpr %>% data.frame %>% dplyr::select(which(datMeta$Brain_lobe=='Temporal')) -->
+
+<!--   Frontal_vs_Temporal = data.frame('ID'=as.character(rownames(datExpr)), -->
+<!--                           'mean' = rowMeans(datExpr), 'sd' = apply(datExpr, 1, sd), -->
+<!--                           'mean_Frontal'=rowMeans(datExpr_Frontal), 'mean_Temporal'=rowMeans(datExpr_Temporal), -->
+<!--                           'sd_Frontal'=apply(datExpr_Frontal,1,sd), 'sd_Temporal'=apply(datExpr_Temporal,1,sd)) %>% -->
+<!--                mutate('mean_diff'=mean_Frontal-mean_Temporal, 'sd_diff'=sd_Frontal-sd_Temporal) %>% -->
+<!--                left_join(SFARI_genes, by='ID') %>% -->
+<!--                dplyr::select(ID, mean, sd, mean_Frontal, mean_Temporal, mean_diff, sd_Frontal, sd_Temporal, sd_diff, `gene-score`) %>% -->
+<!--                mutate('Neuronal'=ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal')) -->
+
+<!--   Frontal_vs_Temporal_SFARI = Frontal_vs_Temporal %>% filter(!is.na(`gene-score`)) %>%  -->
+<!--                      mutate(Group = as.character(`gene-score`)) %>% dplyr::select(-c(Neuronal,`gene-score`)) -->
+<!--   Frontal_vs_Temporal_Neuro = Frontal_vs_Temporal %>% mutate(Group = Neuronal) %>% dplyr::select(-c(Neuronal,`gene-score`)) -->
+<!--   Frontal_vs_Temporal_all = Frontal_vs_Temporal %>% mutate(Group = 'All') %>% dplyr::select(-c(Neuronal,`gene-score`)) -->
+
+<!--   Frontal_vs_Temporal_together = bind_rows(Frontal_vs_Temporal_SFARI, Frontal_vs_Temporal_Neuro, Frontal_vs_Temporal_all) %>%  -->
+<!--                         mutate(Group = ordered(Group, levels=c('1','2','3','4','5','6', -->
+<!--                                                                'Neuronal','Non-Neuronal','All'))) %>% -->
+<!--                         left_join(DE_info, by='ID') -->
+
+<!--   return(Frontal_vs_Temporal_together) -->
+<!-- } -->
+
+<!-- Frontal_vs_Temporal = make_Frontal_vs_Temporal_df(datExpr) -->
+
+<!-- p1 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, mean, fill=Group)) +  -->
+<!--               geom_boxplot() + theme_minimal() +  -->
+<!--               ggtitle('Mean (left) and Standard Deviation (right) by score') + -->
+<!--               scale_fill_manual(values=gg_colour_hue(9)) + -->
+<!--               theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1))) -->
+
+<!-- p2 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, sd, fill=Group)) +  -->
+<!--               geom_boxplot() + theme_minimal() + -->
+<!--               ggtitle('Mean (left) and Standard Deviation (right) by score') + -->
+<!--               scale_fill_manual(values=gg_colour_hue(9)) + -->
+<!--               theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1))) -->
+
+<!-- subplot(p1, p2, nrows=1) -->
+
+<!-- rm(p1, p2) -->
+<!-- ``` -->
+
+
+<!-- ```{r, warning=FALSE, fig.width=10} -->
+<!-- ggplotly(ggplot(Frontal_vs_Temporal %>% filter(Group!='All'), aes(mean, sd)) + geom_point(alpha=0.2, aes(id=ID, fill=Group, color=Group)) + -->
+<!--          scale_color_manual(values=gg_colour_hue(9)) + scale_fill_manual(values=gg_colour_hue(9)) +   -->
+<!--          scale_y_continuous(trans='log2') + #scale_x_continuous(trans='log2') +  -->
+<!--            ggtitle(paste0('Corr=',round(cor(Frontal_vs_Temporal$mean, Frontal_vs_Temporal$sd), 2))) + -->
+<!--          geom_abline(color='#808080', size=0.5) + theme_minimal()) -->
+
+<!-- lm(sd~mean, data=Frontal_vs_Temporal)$coefficients -->
+<!-- ``` -->
+
+<!-- #### Difference between Brain lobe by score -->
+
+<!-- ```{r, fig.width=10, warning=FALSE} -->
+<!-- p1 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, abs(mean_diff), fill=Group)) +  -->
+<!--                 geom_boxplot() + theme_minimal() +  -->
+<!--                 ggtitle('Difference in mean (left) and log Fold Change (right) by Brain region') + -->
+<!--                 scale_fill_manual(values=gg_colour_hue(9)) + -->
+<!--                 theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1))) -->
+
+<!-- p2 = ggplotly(ggplot(Frontal_vs_Temporal, aes(Group, abs(logFC), fill=Group)) +  -->
+<!--                 geom_boxplot() + theme_minimal() + -->
+<!--                 ggtitle('Difference in mean (left) and log Fold Change (right) by Brain region') + -->
+<!--                 scale_fill_manual(values=gg_colour_hue(9)) + -->
+<!--                 theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1))) -->
+
+<!-- subplot(p1, p2, nrows=1) -->
+
+<!-- rm(p1, p2) -->
+<!-- ``` -->
+

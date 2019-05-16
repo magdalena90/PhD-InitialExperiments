@@ -1,0 +1,259 @@
+---
+title: 'Gandal vs BrainSpan'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) #; library(plotlyutils)
+library(biomaRt) ; library(lumi) ; library(DESeq2)
+library(AnnotationDbi) ; library(illuminaHumanv4.db) ; library(samr)
+library(venneuler)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+Filtering criteria:
+
+- Gandal:
+
+  - Keep only control samples
+  
+  - Keep probes with expression > 0 in at least half of the samples
+  
+- BrainSpan:
+
+  - Keep only Temporal and Frontal lobe samples
+  
+  - Keep probes with mean expression larger than 0.005
+  
+- Both:
+  
+  - Keep probes present in both datasets
+
+```{r}
+# Load Gandal's Dataset
+if(file.exists('./../Data/Gandal_RNASeq.RData')){
+  
+  load('./../Data/Gandal_RNASeq.RData')
+  
+  datExpr_Gandal = datExpr %>% dplyr::select(which(colnames(datExpr) %in% rownames(datMeta[datMeta$Diagnosis_=='CTL',])))
+  datMeta_Gandal = datMeta %>% filter(Diagnosis_=='CTL')
+  datProbes_Gandal = datProbes
+  DE_info_Gandal = DE_info
+  
+} else print('Gandal_RNASeq.RData does not exist. Find how to create it in 04_26_Gandal_RNASeq_exploratory_analysis.RData')
+
+# Load BrainSpan's Dataset
+if(file.exists('./../Data/BrainSpan_filtered.RData')){
+  
+  load('./../Data/BrainSpan_filtered.RData')
+  
+  datExpr_BrainSpan = datExpr
+  datMeta_BrainSpan = datMeta
+  datProbes_BrainSpan = datProbes
+  DE_info_BrainSpan = DE_info
+  
+} else print('BrainSpan_raw.RData does not exist. Find how to create it in 05_14_BrainSpan_exploratory_analysis.RData')
+
+rm(datExpr, datMeta, datProbes, DE_info)
+
+# Probe comparison
+paste0('After filtering, Gandal has ', nrow(datExpr_Gandal),' probes and BrainSpan has ', 
+       nrow(datExpr_BrainSpan),', of which they share ',
+       sum(rownames(datExpr_Gandal) %in% rownames(datExpr_BrainSpan)))
+
+all_probes = unique(c(rownames(datExpr_Gandal), rownames(datExpr_BrainSpan)))
+
+DE_genes_df = data.frame('Gandal' = all_probes %in% rownames(datExpr_Gandal),
+                         'BrainSpan' = all_probes %in% rownames(datExpr_BrainSpan))
+rownames(DE_genes_df) = all_probes
+
+plot(venneuler(DE_genes_df))
+
+# Filter to keep only common probes
+datExpr_Gandal = datExpr_Gandal[rownames(datExpr_Gandal) %in% rownames(datExpr_BrainSpan),]
+datProbes_Gandal = datProbes_Gandal[rownames(datProbes_Gandal) %in% rownames(datExpr_Gandal),]
+
+datExpr_BrainSpan = datExpr_BrainSpan[rownames(datExpr_BrainSpan) %in% rownames(datExpr_Gandal),]
+datProbes_BrainSpan = datProbes_BrainSpan[rownames(datProbes_BrainSpan) %in% rownames(datExpr_BrainSpan),]
+
+# write.csv(rownames(datExpr_Gandal), file='./../Data/Gandal_BrainSpan_probes.csv', row.names=FALSE)
+
+rm(all_probes, DE_genes_df)
+```
+
+### Comparing gene expression between datasets
+
+**Note:** The data available from BrainSpan is supposed to be normalised, but it resembles more the raw Gandal data than the normaliesd version, so I'm going to treat both datasets as raw counts.
+
+#### Mean expression by probe
+
+**Note:** Both correlation and LM parameters only consider SFARI score and Neuronal related genes, because those are the ones we are most interested in (the correlation is much smaller when considering all the genes (~0.12))
+
+- Gandal's dataset has much larger expression levels and they cover a much larger range than BrainSpan, but they seem to follow the same general structure
+
+- The difference between mean is bigger for higher SFARI scores (makes sense because the slope of the regression is lower than 1)
+
+```{r, warning=FALSE}
+summary_expr = data.frame('ID'=rownames(datExpr_Gandal),
+                          'Gandal'=rowMeans(datExpr_Gandal), 'BrainSpan'=rowMeans(datExpr_BrainSpan)) %>%
+                          mutate( 'diff' = abs(Gandal-BrainSpan)) %>%
+                          left_join(SFARI_genes, by='ID') %>% 
+                          mutate(`gene-score` = ifelse(is.na(`gene-score`), 
+                                                       ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'),
+                                                       `gene-score`))
+
+fit = lm(BrainSpan ~ Gandal, data=summary_expr[summary_expr$`gene-score`!='Non-Neuronal',])
+ggplotly(ggplot(summary_expr, aes(Gandal, BrainSpan, color=`gene-score`)) + geom_point(alpha=0.2) + 
+       scale_color_manual(values=gg_colour_hue(9)) + geom_abline(color='#808080') +
+       scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + theme_minimal() +
+       ggtitle(paste0('Corr=',round(cor(summary_expr$Gandal[summary_expr$`gene-score`!='Non-Neuronal'], 
+                                        summary_expr$BrainSpan[summary_expr$`gene-score`!='Non-Neuronal']), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))))
+
+summary_expr = summary_expr %>% mutate(`gene-score`='All') %>% bind_rows(summary_expr) %>%
+               mutate(`gene-score` = factor(`gene-score`, levels=c('1','2','3','4','5','6','Neuronal','Non-Neuronal','All')))
+  
+ggplotly(ggplot(summary_expr, aes(`gene-score`, diff, fill=`gene-score`)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in expression mean by dataset') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+```
+
+#### SD by probe
+
+```{r, warning=FALSE}
+summary_expr = data.frame('ID'=rownames(datExpr_Gandal),
+                          'Gandal'=apply(datExpr_Gandal,1,sd), 'BrainSpan'=apply(datExpr_BrainSpan,1,sd)) %>%
+                          mutate( 'diff' = abs(Gandal-BrainSpan)) %>%
+                          left_join(SFARI_genes, by='ID') %>% 
+                          mutate(`gene-score` = ifelse(is.na(`gene-score`), 
+                                                       ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'),
+                                                       `gene-score`))
+
+fit = lm(BrainSpan ~ Gandal, data=summary_expr[summary_expr$`gene-score`!='Non-Neuronal',])
+ggplotly(ggplot(summary_expr, aes(Gandal, BrainSpan, color=`gene-score`)) + geom_point(alpha=0.2) + 
+       scale_color_manual(values=gg_colour_hue(9)) + geom_abline(color='#808080') +
+       scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + theme_minimal() +
+       ggtitle(paste0('Corr=',round(cor(summary_expr$Gandal[summary_expr$`gene-score`!='Non-Neuronal'], 
+                                        summary_expr$BrainSpan[summary_expr$`gene-score`!='Non-Neuronal']), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))))
+
+summary_expr = summary_expr %>% mutate(`gene-score`='All') %>% bind_rows(summary_expr) %>%
+               mutate(`gene-score` = factor(`gene-score`, levels=c('1','2','3','4','5','6','Neuronal','Non-Neuronal','All')))
+  
+ggplotly(ggplot(summary_expr, aes(`gene-score`, diff, fill=`gene-score`)) + 
+                geom_boxplot() + theme_minimal() + 
+                ggtitle('Difference in sd by dataset') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+rm(fit, summary_expr)
+```
+
+#### Normalised data (Gandal)
+
+Normalisation method: vst normalisation from the DESeq2 package
+
+```{r}
+
+counts = as.matrix(datExpr_Gandal)
+rowRanges = GRanges(datProbes_Gandal$chromosome_name,
+                    IRanges(datProbes_Gandal$start_position, width=datProbes_Gandal$length),
+                    strand=datProbes_Gandal$strand,
+                    feature_id=datProbes_Gandal$ensembl_gene_id)
+
+se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta_Gandal)
+dds = DESeqDataSet(se, design =~1)
+dds = estimateSizeFactors(dds)
+vst_output = vst(dds)
+datExpr_Gandal = assay(vst_output)
+
+```
+
+#### Mean expression by probe
+
+Since Gandal's dataset was log2 transformed in the normalisation, BrainSpan is also transformed
+
+Gandal's dataset still has higher values as well as a wider range of values but the slope of the linear fit is 0.5 now (much closer to 1) as well as the correlation
+```{r, warning=FALSE}
+summary_expr = data.frame('ID'=rownames(datExpr_Gandal),
+                          'Gandal'=rowMeans(datExpr_Gandal), 'BrainSpan'=rowMeans(log2(datExpr_BrainSpan+1))) %>%
+                          mutate( 'diff' = abs(Gandal-BrainSpan)) %>%
+                          left_join(SFARI_genes, by='ID') %>%
+                          mutate(`gene-score` = ifelse(is.na(`gene-score`),
+                                                       ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'),
+                                                       `gene-score`))
+
+fit = lm(BrainSpan ~ Gandal, data=summary_expr[summary_expr$`gene-score`!='Non-Neuronal',])
+ggplotly(ggplot(summary_expr, aes(Gandal, BrainSpan, color=`gene-score`)) + geom_point(alpha=0.2) +
+       scale_color_manual(values=gg_colour_hue(9)) + geom_abline(color='#808080') + theme_minimal() +
+       ggtitle(paste0('Corr=',round(cor(summary_expr$Gandal[summary_expr$`gene-score`!='Non-Neuronal'],
+                                        summary_expr$BrainSpan[summary_expr$`gene-score`!='Non-Neuronal']), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))))
+
+summary_expr = summary_expr %>% mutate(`gene-score`='All') %>% bind_rows(summary_expr) %>%
+               mutate(`gene-score` = factor(`gene-score`, levels=c('1','2','3','4','5','6','Neuronal','Non-Neuronal','All')))
+
+ggplotly(ggplot(summary_expr, aes(`gene-score`, diff, fill=`gene-score`)) +
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in expression mean by dataset') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+```
+
+#### SD by probe
+
+```{r, warning=FALSE}
+summary_expr = data.frame('ID'=rownames(datExpr_Gandal),
+                          'Gandal'=apply(datExpr_Gandal,1,sd), 'BrainSpan'=apply(log2(datExpr_BrainSpan+1),1,sd)) %>%
+                          mutate( 'diff' = abs(Gandal-BrainSpan)) %>%
+                          left_join(SFARI_genes, by='ID') %>%
+                          mutate(`gene-score` = ifelse(is.na(`gene-score`),
+                                                       ifelse(ID %in% GO_neuronal$ID, 'Neuronal', 'Non-Neuronal'),
+                                                       `gene-score`))
+
+fit = lm(BrainSpan ~ Gandal, data=summary_expr[summary_expr$`gene-score`!='Non--Neuronal',])
+ggplotly(ggplot(summary_expr, aes(Gandal, BrainSpan, color=`gene-score`)) + geom_point(alpha=0.2) +
+       scale_color_manual(values=gg_colour_hue(9)) + geom_abline(color='#808080') +
+       scale_x_continuous(trans='log2') + scale_y_continuous(trans='log2') + theme_minimal() +
+       ggtitle(paste0('Corr=',round(cor(summary_expr$Gandal[summary_expr$`gene-score`!='Non--Neuronal'],
+                                        summary_expr$BrainSpan[summary_expr$`gene-score`!='Non--Neuronal']), 2),
+                      ', LM fit: m=', round(fit$coefficients[[2]],4), ' b=', round(fit$coefficients[[1]],2))))
+
+summary_expr = summary_expr %>% mutate(`gene-score`='All') %>% bind_rows(summary_expr) %>%
+               mutate(`gene-score` = factor(`gene-score`, levels=c('1','2','3','4','5','6','Neuronal','Non-Neuronal','All')))
+
+ggplotly(ggplot(summary_expr, aes(`gene-score`, diff, fill=`gene-score`)) +
+                geom_boxplot() + theme_minimal() +
+                ggtitle('Difference in sd by dataset') +
+                scale_fill_manual(values=gg_colour_hue(9)) +
+                theme(legend.position='none', axis.text.x=element_text(angle=45, hjust=1)))
+
+rm(fit, summary_expr)
+```
+
+#### In general
+
+- We don't know the preprocessing and normalisation pipeline the BrainSpan data went through, so there could be big differences between the two processes
+
+- The difference in expression levels between datasets is related to the level of expression of the probes
+
+- The difference in mean expression beween datasets is bigger than the difference in sd
+
+- BrainSpan probes with the lowest sd don't behave similar to their corresponding genes in the Gandal dataset
+
+<br>
