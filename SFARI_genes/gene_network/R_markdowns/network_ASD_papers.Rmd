@@ -136,6 +136,12 @@ subplot(p1, p2, nrows=1)
 # Remove genes with no articles related to them
 if(sum(rowSums(gene_pmID_mat)==0)>0){
   print(paste0('Removing ', sum(rowSums(gene_pmID_mat)==0), ' rows with zero counts from gene-pubmedID count matrix'))
+  
+  print('Score distribution of genes removed:')
+  table(SFARI_genes_info$gene.score[SFARI_genes_info$gene.symbol %in% rownames(gene_pmID_mat)[rowSums(gene_pmID_mat)==0]])
+  
+  print('Genes:')
+  print(SFARI_genes_info$gene.symbol[SFARI_genes_info$gene.symbol %in% rownames(gene_pmID_mat)[rowSums(gene_pmID_mat)==0]])
   gene_pmID_mat = gene_pmID_mat[rowSums(gene_pmID_mat)>0,] 
 }
 ```
