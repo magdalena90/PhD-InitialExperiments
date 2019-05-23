@@ -187,7 +187,7 @@ rm(gene_gene_mat)
 #### Network analysis
 
 The correlation between eigencentrality and SFARI scores is very small
-```{r, fig.width=10}
+```{r}
 graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
 
 # Eigencentrality
@@ -207,11 +207,11 @@ rm(cor_SFARI_eigencentr, plot_data)
 ```
 
 There doesn't seem to be a strong relation between number of papers and eigencentrality for each score
-```{r, fig.width=10, fig.height=6, warning=FALSE}
+```{r, fig.width=7, fig.height=7, warning=FALSE}
 
 nodes = nodes %>% mutate('eigencentrality'=eigencentr, 'n.papers'=value, 'gene.score'=as.character(gene.score))
 
-ggplotly(nodes %>% ggplot(aes(n.papers, eigencentrality, fill=gene.score, color=gene.score)) + 
+ggplotly(nodes %>% ggplot(aes(n.papers, eigencentrality, fill=gene.score, color=gene.score)) + theme(aspect.ratio=1) +
          geom_point(alpha=0.5, aes(id=gene.symbol)) + geom_smooth(method='lm', fill=NA, size=0.5) + 
          theme_minimal() + ggtitle('N papers vs Eigencentrality'))
 ```
@@ -219,5 +219,5 @@ ggplotly(nodes %>% ggplot(aes(n.papers, eigencentrality, fill=gene.score, color=
 #### Network visualisation
 ```{r, fig.width=10}
 visNetwork(nodes, edges, height='700px', width='100%') %>% visOptions(selectedBy = 'gene.score') %>% 
-  visEdges(smooth = TRUE) %>% visIgraphLayout() %>% visLayout(randomSeed=12)
+  visEdges(smooth = TRUE) %>% visIgraphLayout() %>% visLayout(randomSeed=123)
 ```

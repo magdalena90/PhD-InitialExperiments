@@ -187,7 +187,7 @@ rm(gene_gene_mat)
 #### Network analysis
 
 The correlation between eigencentrality and SFARI scores is strong (it's negative because the highest SFARI scores have the lowest numbers)
-```{r, fig.width=10}
+```{r}
 graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
 
 # Eigencentrality
@@ -207,7 +207,7 @@ rm(cor_SFARI_eigencentr, plot_data)
 ```
 
 There seems to be a relation between number of papers and eigencentrality for all scores
-```{r, fig.width=10, fig.height=6, warning=FALSE}
+```{r, fig.width=7, fig.height=7, warning=FALSE}
 
 nodes = nodes %>% mutate('eigencentrality'=eigencentr, 'n.papers'=value, 'gene.score'=as.character(gene.score))
 
