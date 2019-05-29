@@ -1,0 +1,281 @@
+---
+title: 'SFARI gene network for all papers'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/gene_network/R_markdowns')
+
+library(tidyverse) ; library(reshape2)
+library(Matrix)
+library(viridis) ; library(plotly) ; library(RColorBrewer) ; library(gplots)
+library(visNetwork) ; library(igraph)
+
+SFARI_colour_hue = function() pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3')
+```
+<br><br>
+
+### Input:
+
+- .csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- .csv file for each of the SFARI genes with the information of all the reports related to it obtained from the SFARI website https://gene.sfari.org/database/human-gene/gene_name using scrapy. Date of web scraping: 20/05/19, script used: ./SFARI_scraping/SFARI_scraping/spiders/SFARI_scraper.py
+
+- For each gene, consider all reports, including the ones not related to ASD.
+
+- Correcting the network using weights as proportion instead of count of papers in common between each pair of genes.
+
+<br><br><br>
+
+#### Get list of genes and list of pubmed ids
+```{r}
+
+# Select if results should be filtered to ASD related or not
+filter_ASD = FALSE
+
+### Get list of genes and pubmed IDs
+
+# Genes
+list_gene_files = list.files('./../SFARI_scraping/genes/')
+
+# Pubmed IDs
+get_pubmed_IDs = function(autism=FALSE){
+  all_pubmed_ids = c()
+  n = 0
+  
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./../SFARI_scraping/genes/', gene_file))
+    
+    if(autism) file = file %>% filter(Autism.Report == 'Yes')
+    
+    if(nrow(file)>0){
+      pubmed_ids = unique(file$pubmed.ID)
+      all_pubmed_ids = unique(c(all_pubmed_ids, pubmed_ids)) 
+    }
+    
+    n = c(n, length(all_pubmed_ids))
+  }
+  
+  all_pubmed_ids = as.character(all_pubmed_ids)
+  
+  return(list('n'=n, 'all_pubmed_ids'=all_pubmed_ids))
+}
+
+get_pubmed_IDs_output = get_pubmed_IDs(filter_ASD)
+n = get_pubmed_IDs_output$n
+all_pubmed_ids = get_pubmed_IDs_output$all_pubmed_ids
+```
+
+```{r}
+
+# See change in number of pubmed articles by each new gene (Seems like the number of new articles were beginning to decrease in the end)
+pubmed_counts = data.frame('genes' = seq(1,length(n)), 'articles'=n)
+
+ggplotly(pubmed_counts %>% ggplot(aes(genes, articles,color='#434343')) + geom_line() +
+  geom_smooth(method='lm', color='#666666', size=0.5) + theme_minimal() + theme(legend.position='none') +
+  ggtitle('Increase in number of pubmed articles by each new gene'))
+
+rm(n, get_pubmed_IDs_output, pubmed_counts)
+```
+
+#### Create gene-pubmed ID (sparse) matrix
+```{r, fig.width=10}
+
+# Create gene - pubmedID sparse matrix
+SFARI_genes_info = read.csv('./../../Data/SFARI_genes_01-15-2019.csv') %>% mutate('ID'=gene.symbol)
+
+create_gene_pmID_mat = function(autism=FALSE){
+  
+  # Create empty dataframe
+  gene_pmID_mat = data.frame(matrix(0, nrow=length(list_gene_files), ncol=length(all_pubmed_ids)))
+  rownames(gene_pmID_mat) = sapply(list_gene_files, function(x) gsub('.csv', '', x))
+  colnames(gene_pmID_mat) = all_pubmed_ids
+  
+  # Fillout dataframe
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./../SFARI_scraping/genes/', gene_file))
+    
+    if(autism) file = file %>% filter(Autism.Report == 'Yes')
+    
+    if(nrow(file)>0){
+      pubmed_ids = as.character(unique(file$pubmed.ID))
+      gene_pmID_mat[gsub('.csv', '', gene_file), pubmed_ids] = 1 
+    }
+  }
+  
+  gene_names = rownames(gene_pmID_mat)
+  sparse_gene_pmID_mat = Matrix(as.matrix(gene_pmID_mat), sparse=TRUE)
+    
+  return(list('gene_names'=gene_names, 'sparse_gene_pmID_mat'=sparse_gene_pmID_mat))
+}
+
+gene_pmID_mat_output = create_gene_pmID_mat(filter_ASD)
+gene_names = gene_pmID_mat_output$gene_names
+gene_pmID_mat = gene_pmID_mat_output$sparse_gene_pmID_mat
+
+plot_data = data.frame('ID' = rownames(gene_pmID_mat), 'n_papers'=rowSums(gene_pmID_mat)) %>% 
+            left_join(SFARI_genes_info, by='ID') %>% mutate(gene.score=as.factor(gene.score))
+
+bins = max(plot_data$n_papers)-min(plot_data$n_papers)+1
+p1 = ggplotly(plot_data %>% ggplot(aes(n_papers)) + geom_histogram(bins=bins, alpha=0.6) +
+         theme_minimal() + ggtitle('Distribution of number of papers per gene'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(gene.score, n_papers, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + 
+              ggtitle('Number of papers per gene (left) and by SFARI score (right)'))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2, bins, plot_data, gene_pmID_mat_output, list_gene_files)
+```
+
+```{r}
+# Remove genes with no articles related to them
+if(sum(rowSums(gene_pmID_mat)==0)>0){
+  print(paste0('Removing ', sum(rowSums(gene_pmID_mat)==0), ' rows with zero counts from gene-pubmedID count matrix'))
+  gene_pmID_mat = gene_pmID_mat[rowSums(gene_pmID_mat)>0,] 
+}
+```
+<br>
+
+### Network analysis
+
+#### Create node and edge list for Network
+```{r, fig.width=10}
+
+# EDGES
+gene_gene_mat = gene_pmID_mat %*% t(gene_pmID_mat)
+
+edges = summary(gene_gene_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>% 
+        mutate(from = gene_names[from], to = gene_names[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction (multiplying by 100 to make the numbers bigger)
+gene_pmID_mat_rowsums = rowSums(gene_pmID_mat)
+names(gene_pmID_mat_rowsums) = rownames(gene_pmID_mat)
+edges = edges %>% mutate('weight'=count/(gene_pmID_mat_rowsums[from]+gene_pmID_mat_rowsums[to])*100)
+
+# NODES
+nodes = SFARI_genes_info %>% dplyr::select(gene.symbol, gene.score, syndromic, number.of.reports) %>% 
+        mutate(id = gene.symbol, title=gene.symbol, value=number.of.reports,
+               shape=ifelse(syndromic==0, 'circle','square'),
+               color_score=case_when(gene.score==1 ~ '#FF7631', gene.score==2 ~ '#FFB100',
+                                     gene.score==3 ~ '#E8E328', gene.score==4 ~ '#8CC83F',
+                                     gene.score==5 ~ '#62CCA6', gene.score==6 ~ '#59B9C9',
+                                     is.na(gene.score) ~ '#b3b3b3')) %>%
+        mutate('color'=color_score) %>% filter(!duplicated(id)) %>% 
+        filter(gene.symbol %in% unique(c(edges$from, edges$to)))
+
+# Details:
+print(paste0('Nodes: ', nrow(nodes),'        Edges: ', nrow(edges)/2))
+
+print(paste0('Lost ', length(unique(SFARI_genes_info$gene.symbol[!SFARI_genes_info$gene.symbol %in% nodes$id])),
+             ' genes because they didn\'t share any publication with other genes'))
+
+
+rm(gene_pmID_mat_rowsums)
+```
+
+#### Scores of the lost genes:
+
+Lost more genes from lower scores, not a single one from score 1
+```{r}
+table(SFARI_genes_info$gene.score[!SFARI_genes_info$gene.symbol %in% nodes$gene.symbol], useNA='ifany')
+```
+
+(Reference) count of original genes by score:
+```{r}
+table(SFARI_genes_info$gene.score, useNA='ifany')
+
+rm(gene_gene_mat)
+```
+
+```{r, fig.width=10}
+edges %>% ggplot(aes(count, weight)) + geom_point(alpha=0.1, color='#006666', position='jitter') + ylab('proportion') +
+          ggtitle('Effects of the change from Count to Proportion on edge weights') + theme_minimal()
+
+```
+
+```{r}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+```
+
+#### Eigencentrality
+The correlation between eigencentrality and SFARI scores is not as strong as before
+```{r}
+# Eigencentrality
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr)
+
+plot_data = data.frame('gene.score'= as.factor(vertex_attr(graph, 'gene.score')),
+                       'Syndromic'= as.logical(vertex_attr(graph, 'syndromic')),
+                       'Eigencentrality'= vertex_attr(graph, 'eigencentrality'))
+
+correlation = cor(nodes$gene.score[!is.na(nodes$gene.score)], eigencentr[!is.na(nodes$gene.score)])
+ggplotly(plot_data %>% ggplot(aes(gene.score, Eigencentrality, fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + theme(legend.position='none') +
+         ggtitle(paste0('Correlation = ', round(correlation, 4))))
+
+correlation = cor(as.numeric(plot_data$Syndromic), plot_data$Eigencentrality)
+ggplotly(plot_data %>% ggplot(aes(Syndromic, Eigencentrality, fill=Syndromic)) + geom_boxplot() + 
+     theme_minimal() + ggtitle(paste0('Correlation = ', round(correlation, 4))))
+
+rm(correlation, plot_data, eigen_centrality_output, eigencentr)
+```
+
+The relation between number of papers and eigencentrality is negative for all groups except score 5
+```{r, fig.width=7, fig.height=7, warning=FALSE}
+
+plot_data = data.frame('id'=vertex_attr(graph, 'id'), 
+                       'eigencentrality'=vertex_attr(graph, 'eigencentrality'), 
+                       'n.papers'=vertex_attr(graph, 'value'),
+                       'gene.score'=as.factor(vertex_attr(graph, 'gene.score')))
+
+ggplotly(plot_data %>% ggplot(aes(n.papers, eigencentrality, fill=gene.score, color=gene.score)) + 
+         geom_point(alpha=0.5, aes(id=id)) + geom_smooth(method='lm', fill=NA, size=0.5) + 
+         theme_minimal() + ggtitle('N papers vs Eigencentrality'))
+
+
+rm(plot_data)
+```
+
+#### Graph coloured by SFARI score
+```{r, fig.width=10, fig.height=6}
+visIgraph(graph) %>% visOptions(selectedBy='gene.score', highlightNearest=TRUE) %>% 
+                     visIgraphLayout(randomSeed=123)
+```
+
+#### Community detection:
+```{r, warning=FALSE, error=FALSE}
+
+communities = cluster_louvain(graph)
+modules = communities %>% membership
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+table(modules)
+
+hm_data = table(vertex_attr(graph, 'gene.score'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
+          as.data.frame.matrix %>% as.matrix
+
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+
+rm(communities, moduless, color_pal)
+```
+
+```{r}
+visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>% 
+                     visIgraphLayout(randomSeed=123)
+```

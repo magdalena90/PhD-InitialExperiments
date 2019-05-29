@@ -148,7 +148,7 @@ ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=`gene-score`)) + geom_point(alpha=
 ```
 
 91% of the variance of the probes seems to be explained by their mean level of expression
-```{r}
+```{r, warning=FALSE}
 ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=meanExpr)) + geom_point(alpha=0.5, aes(id=ID)) + theme_minimal() +
          xlab(paste0('PC1 (',round(summary(datExpr_pca)$importance[2,1]*100),'%)')) +
          ylab(paste0('PC2 (',round(summary(datExpr_pca)$importance[2,2]*100),'%)')) +
@@ -156,7 +156,7 @@ ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=meanExpr)) + geom_point(alpha=0.5,
 ```
 
 The second PC seems to reflect the variance of the probe
-```{r}
+```{r, warning=FALSE}
 ggplotly(ggplot(pca_plot, aes(PC1, PC2, color=sd)) + geom_point(alpha=0.5, aes(id=ID)) + theme_minimal() +
          xlab(paste0('PC1 (',round(summary(datExpr_pca)$importance[2,1]*100),'%)')) +
          ylab(paste0('PC2 (',round(summary(datExpr_pca)$importance[2,2]*100),'%)')) +

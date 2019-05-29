@@ -1,0 +1,292 @@
+---
+title: 'SFARI gene network for all papers'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/gene_network/R_markdowns')
+
+library(tidyverse) ; library(reshape2)
+library(Matrix)
+library(viridis) ; library(plotly) ; library(RColorBrewer) ; library(gplots)
+library(visNetwork) ; library(igraph)
+
+SFARI_colour_hue = function() pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3')
+```
+<br><br>
+
+### Input:
+
+- .csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- .csv file for each of the SFARI genes with the information of all the reports related to it obtained from the SFARI website https://gene.sfari.org/database/human-gene/gene_name using scrapy. Date of web scraping: 20/05/19, script used: ./SFARI_scraping/SFARI_scraping/spiders/SFARI_scraper.py
+
+- For each gene, consider all reports, including the ones not related to ASD.
+
+- Correcting the network using weights as proportion instead of count of papers in common between each pair of genes.
+
+<br><br><br>
+
+#### Get list of genes and list of pubmed ids
+```{r}
+
+# Select if results should be filtered to ASD related or not
+filter_ASD = FALSE
+
+### Get list of genes and pubmed IDs
+
+# Genes
+list_gene_files = list.files('./../SFARI_scraping/genes/')
+
+# Pubmed IDs
+get_pubmed_IDs = function(autism=FALSE){
+  all_pubmed_ids = c()
+  n = 0
+  
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./../SFARI_scraping/genes/', gene_file))
+    
+    if(autism) file = file %>% filter(Autism.Report == 'Yes')
+    
+    if(nrow(file)>0){
+      pubmed_ids = unique(file$pubmed.ID)
+      all_pubmed_ids = unique(c(all_pubmed_ids, pubmed_ids)) 
+    }
+    
+    n = c(n, length(all_pubmed_ids))
+  }
+  
+  all_pubmed_ids = as.character(all_pubmed_ids)
+  
+  return(list('n'=n, 'all_pubmed_ids'=all_pubmed_ids))
+}
+
+get_pubmed_IDs_output = get_pubmed_IDs(filter_ASD)
+n = get_pubmed_IDs_output$n
+all_pubmed_ids = get_pubmed_IDs_output$all_pubmed_ids
+```
+
+```{r}
+
+# See change in number of pubmed articles by each new gene (Seems like the number of new articles were beginning to decrease in the end)
+pubmed_counts = data.frame('genes' = seq(1,length(n)), 'articles'=n)
+
+ggplotly(pubmed_counts %>% ggplot(aes(genes, articles,color='#434343')) + geom_line() +
+  geom_smooth(method='lm', color='#666666', size=0.5) + theme_minimal() + theme(legend.position='none') +
+  ggtitle('Increase in number of pubmed articles by each new gene'))
+
+rm(n, get_pubmed_IDs_output, pubmed_counts)
+```
+
+#### Create gene-pubmed ID (sparse) matrix
+```{r, fig.width=10}
+
+# Create gene - pubmedID sparse matrix
+SFARI_genes_info = read.csv('./../../Data/SFARI_genes_01-15-2019.csv') %>% mutate('ID'=gene.symbol)
+
+create_gene_pmID_mat = function(autism=FALSE){
+  
+  # Create empty dataframe
+  gene_pmID_mat = data.frame(matrix(0, nrow=length(list_gene_files), ncol=length(all_pubmed_ids)))
+  rownames(gene_pmID_mat) = sapply(list_gene_files, function(x) gsub('.csv', '', x))
+  colnames(gene_pmID_mat) = all_pubmed_ids
+  
+  # Fillout dataframe
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./../SFARI_scraping/genes/', gene_file))
+    
+    if(autism) file = file %>% filter(Autism.Report == 'Yes')
+    
+    if(nrow(file)>0){
+      pubmed_ids = as.character(unique(file$pubmed.ID))
+      gene_pmID_mat[gsub('.csv', '', gene_file), pubmed_ids] = 1 
+    }
+  }
+  
+  sparse_gene_pmID_mat = Matrix(as.matrix(gene_pmID_mat), sparse=TRUE)
+    
+  return(sparse_gene_pmID_mat)
+}
+
+gene_pmID_mat = create_gene_pmID_mat(filter_ASD)
+
+plot_data = data.frame('ID' = colnames(gene_pmID_mat), 'n_genes'=colSums(gene_pmID_mat))
+bins = max(plot_data$n_genes)-min(plot_data$n_genes)+1
+ggplotly(plot_data %>% ggplot(aes(n_genes)) + geom_histogram(bins=bins, alpha=0.6) +
+         theme_minimal() + ggtitle('Distribution of number of genes per paper'))
+
+rm(bins, plot_data, list_gene_files)
+```
+
+```{r}
+# Remove genes with no articles related to them
+if(sum(rowSums(gene_pmID_mat)==0)>0){
+  print(paste0('Removing ', sum(rowSums(gene_pmID_mat)==0), ' rows with zero counts from gene-pubmedID count matrix'))
+  gene_pmID_mat = gene_pmID_mat[rowSums(gene_pmID_mat)>0,] 
+}
+```
+<br>
+
+### Network analysis
+
+#### Create node and edge list for Network
+```{r, fig.width=10}
+
+# EDGES
+pmID_pmID_mat = t(gene_pmID_mat) %*% gene_pmID_mat
+pmID_names = colnames(gene_pmID_mat)
+
+edges = summary(pmID_pmID_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>% 
+        mutate(from = pmID_names[from], to = pmID_names[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction (multiplying by 100 to make the numbers bigger)
+gene_pmID_mat_colsums = colSums(gene_pmID_mat)
+names(gene_pmID_mat_colsums) = colnames(gene_pmID_mat)
+edges = edges %>% mutate('weight'=count/(gene_pmID_mat_colsums[from]+gene_pmID_mat_colsums[to])*100)
+
+# NODES
+nodes = data.frame('id'=colnames(gene_pmID_mat), 'value'=colSums(gene_pmID_mat))
+
+# Details:
+print(paste0('Nodes: ', nrow(nodes),'        Edges: ', nrow(edges)/2))
+
+rm(gene_pmID_mat_colsums)
+```
+
+```{r, fig.width=10}
+edges %>% ggplot(aes(count, weight)) + geom_point(alpha=0.1, color='#006666', position='jitter') + ylab('proportion') +
+          ggtitle('Effects of the change from Count to Proportion on edge weights') + theme_minimal()
+
+```
+
+```{r}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+```
+
+#### Eigencentrality
+```{r}
+# Eigencentrality
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr)
+
+rm(eigen_centrality_output, eigencentr)
+```
+
+The relation between number of papers and eigencentrality holds even after normalising the weights
+```{r, fig.width=7, fig.height=7, warning=FALSE}
+
+plot_data = data.frame('id'=vertex_attr(graph, 'name'), 
+                       'eigencentrality'=vertex_attr(graph, 'eigencentrality'), 
+                       'n.genes'=vertex_attr(graph, 'value'))
+
+ggplotly(plot_data %>% ggplot(aes(n.genes, eigencentrality)) + scale_x_sqrt() + scale_y_sqrt() +
+         geom_point(alpha=0.5, aes(id=id)) + geom_smooth(method='lm', fill=NA, size=0.5) + 
+         theme_minimal() + ggtitle('N genes vs Eigencentrality'))
+
+graph_backup = graph
+
+rm(plot_data)
+```
+
+#### Graph
+```{r, fig.width=10, fig.height=6}
+visIgraph(graph) %>% visOptions(highlightNearest=TRUE) %>% visIgraphLayout(randomSeed=123)
+```
+
+#### Community detection:
+
+- Removing nodes with less than 10 edges (because of the many tiny unconnected communities)
+```{r, warning=FALSE, error=FALSE, fig.width=12}
+
+graph = graph_backup %>% delete_vertices(degree(graph_backup)<10)
+
+comms_louvain = cluster_louvain(graph)
+modules = comms_louvain %>% membership
+#table(modules)
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.sizes, size=Freq)
+ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
+         ggtitle('Number of articles in each module') + theme_minimal() + theme(legend.position = 'none'))
+
+rm(moduless, color_pal, comm_sizes)
+```
+
+```{r}
+visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>% 
+                     visIgraphLayout(randomSeed=123)
+```
+
+Most important articles for modules with more than 60 nodes:
+
+- To look for an article from the pubmed ID: https://www.ncbi.nlm.nih.gov/pubmed/id
+
+```{r}
+
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  if(length(module_vertices)>60){
+    
+    # Plot eigencentrality of top 10 MeSH terms
+    plot_data = data.frame('pubmedID'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+                top_n(10, wt=eigencentrality)
+    print(plot_data %>% ggplot(aes(reorder(pubmedID, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top terms for Module ', i)) + 
+         xlab('PubMed IDs') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+  }
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data, comms_louvain)
+```
+
+```{r}
+module_graph = contract(graph, graph %>% get.vertex.attribute('module'), vertex.attr.comb='first') %>%
+               simplify(edge.attr.comb='sum') %>% set_vertex_attr('name', value=module_info$module) %>%
+                                                  set_vertex_attr('title', value=module_info$top_term) %>%
+                                                  set_vertex_attr('module_size', value=module_info$size) %>%
+                                                  set_vertex_attr('value', value=module_info$size)
+
+nodes_module_graph  = module_graph %>% as_data_frame(what='vertices') %>% mutate('id'=name)
+edges_module_graph = module_graph %>% as_data_frame() %>% 
+                     mutate('corrected_weight' = weight/(nodes_module_graph$module_size[as.numeric(from)]*
+                                                 nodes_module_graph$module_size[as.numeric(to)])*1000)
+
+module_graph = module_graph %>% set_edge_attr('weight', value=edges_module_graph$corrected_weight)
+
+visIgraph(module_graph) %>% visIgraphLayout(randomSeed=123) %>% visOptions(highlightNearest=TRUE)
+
+```
+
+
+
+

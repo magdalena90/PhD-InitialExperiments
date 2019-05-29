@@ -1,0 +1,334 @@
+---
+title: 'MeSH Terms Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/gene_network/R_markdowns')
+
+library(tidyverse) ; library(reshape2)
+library(jsonlite)
+library(viridisLite) ; library(viridis) ; library(plotly) ; library(gplots) ; library(RColorBrewer)
+library(Matrix)
+library(igraph) ; library(visNetwork)
+
+```
+
+### Input
+
+- ./../SFARI_genes_01-15-2019.csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- SFARI_scraping/genes/*gene_name*.csv file for each of the SFARI genes with the information of all the reports related to it obtained using the SFARI_scraper.py script and scrapy package.
+
+- MeSH_terms_by_paper.json file with all the MeSH terms associated to each of the articles from the SFARI_scraper output files. Retrieved from the NCBI e-utils api using the get_articles_metadata.R script and reutils package. Downloaded on 24/05/19.
+
+#### Get list of articles and of MeSH terms
+```{r}
+
+# Read json with MeSH terms by paper
+mesh_terms_by_article_list = read_json('./../Data/MeSH_terms_by_paper.json', simplifyVector = TRUE)
+
+# Get list of all mesh terms
+all_mesh_terms = c()
+n = 0
+
+for(mesh_terms_in_article in mesh_terms_by_article_list){
+  all_mesh_terms = unique(c(all_mesh_terms, mesh_terms_in_article))
+  n = c(n, length(all_mesh_terms))
+}
+
+mesh_terms_counts = data.frame('articles' = seq(1,length(n)), 'mesh_terms'=n)
+
+print(paste0('Articles: ', length(mesh_terms_by_article_list), '       Mesh terms: ', length(all_mesh_terms)))
+
+ggplotly(mesh_terms_counts %>% ggplot(aes(articles, mesh_terms, color='#434343')) + geom_line() +
+         geom_smooth(method='lm', color='#666666', se=FALSE, size=0.5) + theme_minimal() + theme(legend.position='none') +
+         ggtitle('Increase in number of MeSH terms by each new article'))
+
+
+rm(mesh_terms_in_article, n, mesh_terms_counts)
+```
+
+#### Create article-MeSH term matrix
+```{r}
+
+all_articles = names(mesh_terms_by_article_list)
+
+article_mesh_term_mat = data.frame(matrix(0, nrow=length(all_articles), ncol=sum(!is.na(all_mesh_terms))))
+rownames(article_mesh_term_mat) = all_articles
+colnames(article_mesh_term_mat) = all_mesh_terms[!is.na(all_mesh_terms)]
+
+for(article in all_articles){
+  article_mesh_terms = mesh_terms_by_article_list[[article]]
+  if(sum(is.na(article_mesh_terms))==0){
+    article_mesh_term_mat[article, article_mesh_terms] = 1
+  }
+}
+
+rm(mesh_terms_by_article_list)
+```
+
+An important proportion of articles (almost 10%) don't have MeSH terms
+```{r}
+mesh_terms_by_article = data.frame('id' = rownames(article_mesh_term_mat), 'n_mesh_terms' = rowSums(article_mesh_term_mat))
+bins = max(mesh_terms_by_article$n_mesh_terms)-min(mesh_terms_by_article$n_mesh_terms)+1
+ggplotly(mesh_terms_by_article %>% ggplot(aes(n_mesh_terms)) + geom_histogram(bins=bins, alpha=0.6) + 
+              ggtitle('Distribution of number of MeSH terms by article') + theme_minimal())
+```
+
+Most MeSH terms are present in only a few articles
+```{r, warning=FALSE}
+articles_by_mesh_term = data.frame('id' = as.character(colnames(article_mesh_term_mat)),
+                                   'n_articles' = colSums(article_mesh_term_mat), stringsAsFactors = FALSE)
+bins = max(articles_by_mesh_term$n_articles)-min(articles_by_mesh_term$n_articles)+1
+ggplotly(articles_by_mesh_term %>% ggplot(aes(n_articles)) + geom_histogram(bins=bins, alpha=0.6) + 
+         scale_x_sqrt() + scale_y_sqrt() + theme_minimal() +
+         ggtitle('Distribution of number of articles that contain each MeSH term'))
+```
+
+Many of the most popular MeSH terms aren't useful
+```{r, fig.width=10, fig.height=10}
+top_n_counts = 50
+top_mesh_terms = articles_by_mesh_term %>% top_n(top_n_counts, wt=n_articles)
+ggplotly(top_mesh_terms %>% ggplot(aes(reorder(id, n_articles), n_articles, fill=n_articles)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top ', top_n_counts, ' MeSH Terms')) + 
+         xlab('') + ylab('No. Articles') + theme_minimal() + theme(legend.position='none'))
+
+
+rm(article, article_mesh_terms, mesh_terms_by_article, bins)
+```
+
+#### Filters:
+
+- Articles that have no MeSH terms
+
+- MeSH terms only present in a single article
+
+```{r}
+keep_articles = rowSums(article_mesh_term_mat)>0
+keep_mesh_terms = colSums(article_mesh_term_mat)>1
+
+print(paste0(sum(!keep_articles), '/', nrow(article_mesh_term_mat), ' articles have no MeSH terms'))
+print(paste0(sum(!keep_mesh_terms), '/', ncol(article_mesh_term_mat), ' MeSH terms are mentioned in a single article'))
+
+article_mesh_term_mat = article_mesh_term_mat[keep_articles, keep_mesh_terms]
+articles_by_mesh_term = articles_by_mesh_term %>% filter(id %in% colnames(article_mesh_term_mat))
+
+print(paste0('Articles: ', nrow(article_mesh_term_mat), '       Mesh terms: ', ncol(article_mesh_term_mat)))
+
+rm(keep_articles, keep_mesh_terms)
+```
+
+- Try to filter out all terms that are not related to the type of experiment that was conducted
+
+```{r}
+
+keep_terms = c('gen', 'mutation','phenotype','molecul','amino','sequence','nucleotide','polymorphism',
+               'knockout','cell','allele','protein','neuron','dna','chromosome','metabolism','signal',
+               'transcript','zygote','haplotype','linkage','exome','cluster','blotting','imaging',
+               'etiology','biomarkers','spectrometry','case-control','syndrome','cohort','disease model',
+               'polymerase','in situ','binding','model','in vitro','electroencephalography','analysis',
+               'exon','haplo','codon','rna','splicing','synap','intron','technique','regulat','trait loci',
+               'cpg','statistics','chromatin')
+articles_by_mesh_term = articles_by_mesh_term %>% 
+                        mutate('keep'=ifelse(grepl(paste(keep_terms,collapse='|'), tolower(id)), TRUE, FALSE)) %>%
+                        filter(keep)
+
+article_mesh_term_mat = article_mesh_term_mat %>% dplyr::select(articles_by_mesh_term$id)
+article_mesh_term_mat = article_mesh_term_mat[rowSums(article_mesh_term_mat)>0, ]
+
+print(paste0('Articles: ', nrow(article_mesh_term_mat), '       Mesh terms: ', ncol(article_mesh_term_mat)))
+
+rm(keep_terms)
+```
+
+```{r, fig.width=10, fig.height=10}
+top_n_counts = 50
+top_mesh_terms = articles_by_mesh_term %>% top_n(top_n_counts, wt=n_articles)
+ggplotly(top_mesh_terms %>% ggplot(aes(reorder(id, n_articles), n_articles, fill=n_articles)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('New top ', top_n_counts, ' MeSH Terms')) + 
+         xlab('') + ylab('No. Articles') + theme_minimal() + theme(legend.position='none'))
+
+rm(top_n_counts, top_mesh_terms)
+```
+
+### Network:
+
+#### MeSH Terms Network
+```{r}
+sparse_article_mesh_term_mat = Matrix(as.matrix(article_mesh_term_mat), sparse=TRUE)
+
+# EDGES
+mesh_mesh_mat = t(sparse_article_mesh_term_mat) %*% sparse_article_mesh_term_mat
+
+edges = summary(mesh_mesh_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>%
+        mutate(from = colnames(article_mesh_term_mat)[from],
+               to = colnames(article_mesh_term_mat)[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction
+article_mesh_term_colsums = colSums(article_mesh_term_mat)
+names(article_mesh_term_colsums) = colnames(article_mesh_term_mat)
+edges = edges %>% mutate('weight'=count/(article_mesh_term_colsums[from]+article_mesh_term_colsums[to]))
+
+# NODES
+nodes = articles_by_mesh_term %>% mutate('id'=as.character(id), 'title'=as.character(id), 'value'=n_articles)
+
+print(paste0('Nodes: ', nrow(nodes), '        Edges: ', nrow(edges)/2))
+```
+
+```{r, fig.width=10}
+edges %>% ggplot(aes(count, weight)) + geom_point(alpha=0.1, color='#006666') + ylab('proportion') +
+          ggtitle('Effects of the change from Count to Proportion on edge weights') + theme_minimal()
+```
+
+```{r}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+```
+
+#### Clustering
+```{r, fig.width=10}
+comms_louvain = cluster_louvain(graph)
+modules = comms_louvain %>% membership
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr) %>%
+                  set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.sizes, size=Freq)
+ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
+         ggtitle('Number of MeSH Terms in each module') + theme_minimal() + theme(legend.position = 'none'))
+
+visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>% 
+                     visIgraphLayout(randomSeed=123)
+
+rm(color_pal, eigen_centrality_output, eigencentr, comm_sizes, edges, nodes)
+```
+
+Most important MeSH terms for modules with more than 100 nodes
+```{r, fig.width=10}
+
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  if(length(module_vertices)>100){
+    
+    # Plot eigencentrality of top 10 MeSH terms
+    plot_data = data.frame('mesh_term'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+                top_n(10, wt=eigencentrality)
+    print(plot_data %>% ggplot(aes(reorder(mesh_term, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top terms for Module ', i)) + 
+         xlab('MeSH Terms') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+  }
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data, comms_louvain)
+```
+
+#### Module Network
+
+- Collapsing edges: sum all original weights and divide by the product of the number of elements in both (the number of possible interactions they could have)
+
+- The Network plot doesn't seem to take weights into account
+
+```{r}
+
+module_graph = contract(graph, graph %>% get.vertex.attribute('module'), vertex.attr.comb='first') %>%
+               simplify(edge.attr.comb='sum') %>% set_vertex_attr('name', value=module_info$module) %>%
+                                                  set_vertex_attr('title', value=module_info$top_term) %>%
+                                                  set_vertex_attr('module_size', value=module_info$size) %>%
+                                                  set_vertex_attr('value', value=module_info$size)
+
+nodes_module_graph  = module_graph %>% as_data_frame(what='vertices') %>% mutate('id'=name)
+edges_module_graph = module_graph %>% as_data_frame() %>% 
+                     mutate('corrected_weight' = weight/(nodes_module_graph$module_size[as.numeric(from)]*
+                                                 nodes_module_graph$module_size[as.numeric(to)])*1000)
+
+module_graph = module_graph %>% set_edge_attr('weight', value=edges_module_graph$corrected_weight)
+
+visIgraph(module_graph) %>% visIgraphLayout(randomSeed=123) %>% visOptions(highlightNearest=TRUE)
+
+rm(module_info, nodes_module_graph, edges_module_graph)
+```
+
+I think the relation between modules is clearer here
+
+```{r, fig.width=10}
+adj_mat = module_graph %>% as_adjacency_matrix(attr='weight') %>% as.matrix
+adj_mat = adj_mat
+
+heatmap.2(adj_mat, cellnote=round(adj_mat,2), dendrogram='none', notecol='gray', scale='none', trace='none',
+          key=FALSE, xlab='Modules', ylab='Modules', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+
+rm(adj_mat)
+```
+
+Save file with the modules each paper belongs to through its mesh terms
+```{r}
+
+mesh_term_module = graph %>% as_data_frame(what='vertices') %>% dplyr::select(name, module)
+
+mesh_term_module_mat = matrix(0, nrow(mesh_term_module), max(mesh_term_module$module))
+rownames(mesh_term_module_mat) = mesh_term_module$name
+colnames(mesh_term_module_mat) = sort(unique(mesh_term_module$module))
+
+for(i in seq(1, nrow(mesh_term_module))){
+  mesh_term_module_mat[i,mesh_term_module[i,2]] = 1
+}
+
+if(!all(colnames(article_mesh_term_mat) == rownames(mesh_term_module_mat))){
+  print('Row and column order dont match!')
+}
+
+article_module_mat = as.matrix(article_mesh_term_mat) %*% mesh_term_module_mat
+rownames(article_module_mat) = rownames(article_mesh_term_mat)
+
+# write.csv(article_module_mat, file='./../Data/article_module_matrix.csv')
+
+print('Distribution of number of modules per article')
+table(apply(article_module_mat, 1, function(x) sum(x>0)))
+```
+
+```{r, fig.height=8}
+
+melt_article_module = melt(article_module_mat)
+colnames(melt_article_module) = c('articleID', 'module', 'value')
+melt_article_module$module = as.factor(melt_article_module$module)
+
+ggplotly(melt_article_module %>% ggplot(aes(value, fill=module, color=module)) +
+         geom_histogram(position='identity', bins=max(melt_article_module$value), alpha=0.5) + 
+         facet_grid(module~., scales='free_y') + ggtitle('Module content distribution per article') + 
+         xlab('n_articles') + ylab('Module content') + theme_minimal() + theme(legend.position='none'))
+
+rm(mesh_term_module, mesh_term_module_mat, i)
+```
