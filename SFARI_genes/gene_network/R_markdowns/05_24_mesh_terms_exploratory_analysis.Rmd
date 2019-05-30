@@ -71,7 +71,7 @@ for(article in all_articles){
   }
 }
 
-rm(mesh_terms_by_article_list)
+rm(mesh_terms_by_article_list, article, article_mesh_terms)
 ```
 
 An important proportion of articles (almost 10%) don't have MeSH terms
@@ -90,6 +90,8 @@ bins = max(articles_by_mesh_term$n_articles)-min(articles_by_mesh_term$n_article
 ggplotly(articles_by_mesh_term %>% ggplot(aes(n_articles)) + geom_histogram(bins=bins, alpha=0.6) + 
          scale_x_sqrt() + scale_y_sqrt() + theme_minimal() +
          ggtitle('Distribution of number of articles that contain each MeSH term'))
+
+rm(bins)
 ```
 
 Many of the most popular MeSH terms aren't useful
