@@ -308,7 +308,7 @@ visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>%
 rm(color_pal, eigen_centrality_output, eigencentr, comm_sizes, edges, nodes)
 ```
 
-Most important MeSH terms for modules with more than 100 nodes
+Most important MeSH terms for modules with more than 50 nodes
 ```{r, fig.width=10}
 
 module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
@@ -328,7 +328,7 @@ for(i in names(sizes(comms_louvain))){
   module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
                                         'size'=length(module_vertices))
     
-  if(length(module_vertices)>100){
+  if(length(module_vertices)>50){
     
     # Plot eigencentrality of top 10 MeSH terms
     plot_data = data.frame('mesh_term'=names(eigencentr), 'eigencentrality'=eigencentr) %>%

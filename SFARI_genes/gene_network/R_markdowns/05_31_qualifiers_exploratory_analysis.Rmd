@@ -30,7 +30,6 @@ library(igraph) ; library(visNetwork)
 
 #### Get list of articles and of MeSH terms
 ```{r}
-
 # Read json with MeSH terms by paper
 mesh_terms_by_article_list = read_json('./../Data/MeSH_terms_by_paper.json', simplifyVector = TRUE)
 ```
