@@ -386,8 +386,8 @@ rm(color_pal)
 ```
 #### Module characterisation
 
-Most important genes for each module
-```{r, fig.width=10}
+Most important genes for each module coloured by SFARI score
+```{r, warning=FALSE}
 
 module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
 
@@ -408,11 +408,11 @@ for(i in names(sizes(comms_louvain))){
     
   # Plot eigencentrality of top 10 genes
   plot_data = data.frame('gene'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
-              top_n(10, wt=eigencentrality)
-  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=eigencentrality)) + 
-       geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
-       ggtitle(paste0('Top genes for Module ', i)) + 
-       xlab('Genes') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+              top_n(10, wt=eigencentrality) %>% left_join(SFARI_genes_info, by=c('gene'='ID'))
+  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+       geom_bar(stat='identity') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') + coord_flip() + 
+       ggtitle(paste0('Top genes for Module ', i)) + xlab('Genes') + ylab('Eigencentrality') + 
+       theme_minimal() + theme(legend.position='none'))
 
 }
 

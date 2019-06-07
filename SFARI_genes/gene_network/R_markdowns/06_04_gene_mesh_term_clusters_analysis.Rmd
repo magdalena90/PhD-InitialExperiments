@@ -255,10 +255,10 @@ rm(plot_data, corr_non_syn, corr_syn, nodes, edges)
 
 ```{r}
 plot_data = data.frame('id'=graph %>% get.vertex.attribute('name'), 'eigencentrality'=eigencentr) %>%
-            top_n(25, wt=eigencentrality)
-ggplotly(plot_data %>% ggplot(aes(reorder(id, eigencentrality), eigencentrality, fill=eigencentrality)) + 
-         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
-         ggtitle(paste0('Top 25 genes with the highest Network centrality')) + 
+            top_n(25, wt=eigencentrality) %>% left_join(SFARI_genes_info, by=c('id'='ID'))
+ggplotly(plot_data %>% ggplot(aes(reorder(id, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+         geom_bar(stat='identity') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') + 
+         coord_flip() + ggtitle(paste0('Top 25 genes with the highest Network centrality')) + 
          xlab('') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
 
 rm(plot_data)
@@ -307,8 +307,8 @@ rm(color_pal, hm_data)
 ```
 #### Module characterisation
 
-Most important genes for each module
-```{r}
+Most important genes for each module coloured by SFARI score
+```{r, warning=FALSE, fig.height=3}
 
 module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
 
@@ -329,11 +329,11 @@ for(i in names(sizes(comms_louvain))){
     
   # Plot eigencentrality of top 10 genes
   plot_data = data.frame('gene'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
-              top_n(10, wt=eigencentrality)
-  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=eigencentrality)) + 
-       geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
-       ggtitle(paste0('Top genes for Module ', i)) + 
-       xlab('Genes') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+              top_n(10, wt=eigencentrality) %>% left_join(SFARI_genes_info, by=c('gene'='ID'))
+  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+       geom_bar(stat='identity') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') + coord_flip() + 
+       ggtitle(paste0('Top genes for Module ', i)) + xlab('Genes') + ylab('Eigencentrality') + 
+       theme_minimal() + theme(legend.position='none'))
 
 }
 
@@ -344,25 +344,13 @@ rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_d
 
 **MeSH term top modules interpretations (kind of):**
 
-- Module 2: Neuroscience 
+**Module 1**: Neuroscience, MAP Kinase proteins
 
-- Module 3: Gene sequencing
+**Module 2**: TATA Box; DNA Sequencing, Mutations, Autism; Immune system; Neuroscience
 
-- Module 7: TF/Proteins
+**Module 3**: TATA Box; DNA Sequencing, Mutations, Autism; TH1 and TH2 Cells; Neuroscience
 
-- Module 9: DNA
-
-- Module 10: TF/Proteins
-
-- Module 14: Proteins
-
-- Module 19: GTP-Binding/Proteins
-
-**Module 1**: Neuroscience
-
-**Module 2**: Proteins? Only Module 7 is in the top modules with description
-
-**Module 3**: Same as Module 2
+*Modules 2 and 3 are very similar
 ```{r, fig.height=6}
 for(i in names(sizes(comms_louvain))){
   

@@ -176,7 +176,7 @@ ggplotly(top_mesh_terms %>% ggplot(aes(reorder(id, n_articles), n_articles, fill
          xlab('') + ylab('No. Articles') + theme_minimal() + theme(legend.position='none'))
 
 
-rm(mesh_terms_by_article, bins)
+rm(mesh_terms_by_article)
 ```
 
 #### Filters:
@@ -305,7 +305,38 @@ visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>%
 rm(color_pal, eigen_centrality_output, eigencentr, comm_sizes, edges, nodes)
 ```
 
-Most important MeSH terms for modules with more than 100 nodes
+**Most important MeSH terms for each module (chosen by eigencentrality):**
+
+- **Module 1:** Chemistry terms?
+
+- **Module 2:** MAP Kinase / Proteins
+
+- **Module 3:** Proteins
+
+- **Module 4:** 2 nodes: Genomic library + Early growth response protein 2
+
+- **Module 5:** AA Transport and Faty acid-binding proteins
+
+- **Module 6:** TATA Box (TFIID binds to the TATA box)
+
+- **Module 7:** DNA Sequencing, Mutations, Autism
+
+- **Module 8:** Proteins, heart
+
+- **Module 9:** Medicine / Clinical?
+
+- **Module 10:** 2 nodes: TH1 and TH2 Cells 
+
+- **Module 11:** Immune system
+
+- **Module 12:** Neuroscience
+
+- **Module 13:** Human leukocyte antigens < Immune system
+
+- **Module 14:** Dopamine, serotonine, methamphetamine
+
+- **Module 15:** Trancription Factors, chromosome pairs
+
 ```{r, fig.width=10}
 
 module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
@@ -324,17 +355,14 @@ for(i in names(sizes(comms_louvain))){
   
   module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
                                         'size'=length(module_vertices))
-    
-  if(length(module_vertices)>100){
-    
-    # Plot eigencentrality of top 10 MeSH terms
-    plot_data = data.frame('mesh_term'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
-                top_n(10, wt=eigencentrality)
-    print(plot_data %>% ggplot(aes(reorder(mesh_term, eigencentrality), eigencentrality, fill=eigencentrality)) + 
-         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
-         ggtitle(paste0('Top terms for Module ', i)) + 
-         xlab('MeSH Terms') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
-  }
+  
+  # Plot eigencentrality of top 10 MeSH terms
+  plot_data = data.frame('mesh_term'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+              top_n(10, wt=eigencentrality)
+  print(plot_data %>% ggplot(aes(reorder(mesh_term, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+       geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+       ggtitle(paste0('Top terms for Module ', i)) + 
+       xlab('MeSH Terms') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
 
 }
 
@@ -397,7 +425,7 @@ if(!all(colnames(article_mesh_term_mat) == rownames(mesh_term_module_mat))){
 article_module_mat = as.matrix(article_mesh_term_mat) %*% mesh_term_module_mat
 rownames(article_module_mat) = rownames(article_mesh_term_mat)
 
-write.csv(article_module_mat, file='./../Data/article_module_matrix_wo_qualifiers.csv')
+#write.csv(article_module_mat, file='./../Data/article_module_matrix_wo_qualifiers.csv')
 
 print('Distribution of number of modules per article')
 table(apply(article_module_mat, 1, function(x) sum(x>0)))

@@ -312,11 +312,17 @@ best_power = datExpr_redDim %>% t %>% pickSoftThreshold(powerVector = seq(1, 10,
 network = datExpr_redDim %>% t %>% blockwiseModules(power=1, numericLabels=TRUE)
 clusterings[['WGCNA']] = network$colors
 names(clusterings[['WGCNA']]) = rownames(datExpr_redDim)
+
+network = datExpr_redDim %>% t %>% blockwiseModules(power=30, numericLabels=TRUE)
+clusterings[['WGCNA_2']] = network$colors
+names(clusterings[['WGCNA_2']]) = rownames(datExpr_redDim)
 ```
 
 It only leaves 68 genes without a cluster but classifies almost all points into the same class:
 ```{r}
 clusterings[['WGCNA']] %>% table
+
+clusterings[['WGCNA_2']] %>% table
 ```
 <br>
 
@@ -522,12 +528,13 @@ plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
                 cc_l2 = as.factor(clusterings[['cc_l2']]),           ica = as.factor(clusterings[['ICA_min']]),
                 n_ica = as.factor(rowSums(ICA_clusters)),            gmm = as.factor(clusterings[['GMM']]),
                 gmm_2 = as.factor(clusterings[['GMM_2']]),           wgcna = as.factor(clusterings[['WGCNA']]),    
+                wgcna_2 = as.factor(clusterings[['WGCNA_2']]),
                 manual = as.factor(clusterings[['Manual']]),         manual_mean = as.factor(clusterings[['Manual_mean']]),
                 manual_sd = as.factor(clusterings[['Manual_sd']]),   SFARI = as.factor(clusterings[['SFARI_score']]),
                 SFARI_bool = as.factor(clusterings[['SFARI_bool']]), syndromic = as.factor(clusterings[['syndromic']])) %>%
               bind_cols(DE_info[rownames(DE_info) %in% rownames(datExpr_redDim),])
 ```
 
-```{r, warning=FALSE, fig.width = 12}
+```{r, warning=FALSE, fig.width = 10, fig.height=10}
 selectable_scatter_plot(plot_points, plot_points)
 ```

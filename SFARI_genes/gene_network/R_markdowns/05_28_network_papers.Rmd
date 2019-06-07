@@ -197,17 +197,12 @@ graph_backup = graph
 rm(plot_data)
 ```
 
-#### Graph
-```{r, fig.width=10, fig.height=6}
-visIgraph(graph) %>% visOptions(highlightNearest=TRUE) %>% visIgraphLayout(randomSeed=123)
-```
-
 #### Community detection:
 
-- Removing nodes with less than 10 edges (because of the many tiny unconnected communities)
-```{r, warning=FALSE, error=FALSE, fig.width=12}
+<!-- - Removing nodes with less than 10 edges (because of the many tiny unconnected communities) -->
+```{r, warning=FALSE, error=FALSE, fig.width=10}
 
-graph = graph_backup %>% delete_vertices(degree(graph_backup)<10)
+# graph = graph_backup %>% delete_vertices(degree(graph_backup)<10)
 
 comms_louvain = cluster_louvain(graph)
 modules = comms_louvain %>% membership
@@ -222,15 +217,17 @@ comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.siz
 ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
          ggtitle('Number of articles in each module') + theme_minimal() + theme(legend.position = 'none'))
 
-rm(moduless, color_pal, comm_sizes)
+rm(color_pal, comm_sizes)
 ```
 
 ```{r}
+# graph = graph_backup %>% delete_vertices(degree(graph_backup)<10)
+
 visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>% 
                      visIgraphLayout(randomSeed=123)
 ```
 
-Most important articles for modules with more than 60 nodes:
+Most important articles for modules with more than 100 nodes:
 
 - To look for an article from the pubmed ID: https://www.ncbi.nlm.nih.gov/pubmed/id
 
@@ -253,7 +250,7 @@ for(i in names(sizes(comms_louvain))){
   module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
                                         'size'=length(module_vertices))
     
-  if(length(module_vertices)>60){
+  if(length(module_vertices)>100){
     
     # Plot eigencentrality of top 10 MeSH terms
     plot_data = data.frame('pubmedID'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
@@ -266,7 +263,7 @@ for(i in names(sizes(comms_louvain))){
 
 }
 
-rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data, comms_louvain)
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data)
 ```
 
 ```{r}
@@ -283,10 +280,51 @@ edges_module_graph = module_graph %>% as_data_frame() %>%
 
 module_graph = module_graph %>% set_edge_attr('weight', value=edges_module_graph$corrected_weight)
 
-visIgraph(module_graph) %>% visIgraphLayout(randomSeed=123) %>% visOptions(highlightNearest=TRUE)
+visIgraph(module_graph) %>% visIgraphLayout(randomSeed=123) %>% visOptions(selectedBy='id', highlightNearest=TRUE)
 
+rm(module_graph, nodes_module_graph, edges_module_graph)
 ```
 
+Year of publication relevance in each cluster through its article's eigenvectors
 
+- Aggregating the eigenvalues of each year by averaging them so there is no bias towards years with more publications (2017, 2018)
+```{r, fig.height=8}
+year_paper_df = read.csv('./../Data/year_by_paper.csv')
 
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  if(length(module_vertices)>100){
+    
+    # Plot eigencentrality of top 10 MeSH terms
+    plot_data = data.frame('pubmedID'=as.integer(names(eigencentr)), 'eigencentrality'=eigencentr) %>%
+                left_join(year_paper_df, by='pubmedID') %>% group_by(year) %>%
+                summarise('eigencentrality'=mean(eigencentrality)) %>% ungroup() %>% 
+                right_join(data.frame('year'=sort(unique(year_paper_df$year), decreasing=T) ), by='year') %>%
+                mutate('eigencentrality'=ifelse(is.na(eigencentrality),0,eigencentrality))
+      
+    print(plot_data %>% ggplot(aes(as.factor(year), eigencentrality, fill=eigencentrality)) + 
+         geom_bar(stat='identity', position='dodge') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top years for Module ', i)) + 
+         xlab('PubMed IDs') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+  }
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data)
+```
 
