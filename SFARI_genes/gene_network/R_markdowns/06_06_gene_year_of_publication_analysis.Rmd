@@ -96,7 +96,7 @@ rm(plot_data)
 
 #### Create gene-year data frame
 
-Even though there are more 2018 papers than 2017, they are referenced left often. Perhaps the SFARI gene database should be updated?
+Even though there are more 2018 papers than 2017, they are referenced left often. Perhaps the SFARI gene database should be updated? Or perhaps newer articles are referencing less papers than ~5 years ago?
 
 Most referenced articles:
 
@@ -105,6 +105,15 @@ Most referenced articles:
 2. https://www.ncbi.nlm.nih.gov/pubmed/25363760: Synaptic, transcriptional and chromatin genes disrupted in autism
 
 3. https://www.ncbi.nlm.nih.gov/pubmed/25533962: Large-scale discovery of novel genetic causes of developmental disorders
+
+```{r, warning=FALSE}
+plot_data = gene_pmID_df %>% mutate('pubmedID'=as.integer(pubmedID)) %>%
+            left_join(year_paper_df, by='pubmedID') %>% group_by(pubmedID, year) %>% count
+
+ggplotly(plot_data %>% ggplot(aes(year, n, id='pubmedID')) + geom_point(alpha=0.1) + scale_y_log10() + 
+         geom_smooth(method='loess', size=0.5) + ggtitle('Mentions in SFARI database of each publication') + theme_minimal())
+
+```
 
 ```{r, warning=FALSE, fig.width=10}
 gene_year_df = gene_pmID_df %>% mutate('pubmedID'=as.integer(pubmedID)) %>% 
@@ -129,7 +138,7 @@ ggplotly(gene_year_df %>% ggplot(aes(year, fill=gene.score)) + geom_histogram(po
          ggtitle('Publication Years by gene preserving scale') + theme_minimal() + theme(legend.position='none'))
 ```
 
-The research of genes with lower SFARI scores seems to have decreased in the last years, specially score 6, and the researched has increased for the genes with the highest scores. This could be making the attention bias towards higher scored genes bigger.
+The research of genes with the highest SFARI scores seems to have increased in the last years, while the lower SFARI scores seem to have decreased in the last years, specially score 6. This could be making the attention bias towards higher scored genes bigger.
 ```{r, warning=FALSE, fig.width=10}
 ggplotly(gene_year_df %>% ggplot(aes(year, fill=gene.score)) + geom_histogram(position='identity', bins=bins) + 
          facet_grid(gene.score~., scales='free_y') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') +
