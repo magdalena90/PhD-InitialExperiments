@@ -77,7 +77,7 @@ table(DE_info$Neuronal[DE_info$`gene-score` %in% c('1','2','3','4','5','6')],
 
 #### Normalised data
 
-**The higher the SFARI score, the higher the mean expression of the probe but the lower the standard deviation**. This is weird because the data was originally heteroscedastic with a positive relation between mean and variance, so the fact that the relation now seems to have reversed could mean that the vst normalisation ended up affecting the highly expressed genes more than it should have when trying to correct their higher variance.
+**The higher the SFARI score, the higher the mean expression of the gene but the lower the standard deviation**. This is weird because the data was originally heteroscedastic with a positive relation between mean and variance, so the fact that the relation now seems to have reversed could mean that the vst normalisation ended up affecting the highly expressed genes more than it should have when trying to correct their higher variance.
 ```{r, warning=FALSE, fig.width=10}
 plot_data = data.frame('ID'=rownames(datExpr), 'MeanExpr'=rowMeans(datExpr), 'SDExpr'=apply(datExpr,1,sd)) %>% 
             left_join(DE_info, by='ID')
@@ -173,13 +173,13 @@ ggplotly(DE_info %>% ggplot(aes(x=gene.score, y=abs(log2FoldChange), fill=gene.s
 
 ### Effects of modifying filtering threshold by SFARI score
 
-**The higher the SFARI score, the higher the percentage of probes that get filtered by differential expression.**
+**The higher the SFARI score, the higher the percentage of genes that get filtered by differential expression.**
 
 - This pattern is consistent for all log fold change thresholds
 
-- All SFARI scores except 6 are more affected by the filtering than the probes with Neuronal-related functional annotations
+- All SFARI scores except 6 are more affected by the filtering than the genes with Neuronal-related functional annotations
 
-- SFARI gene group 1 is more affected than the average probe, although the number of probes with SFARI score 1 is small, so this could be unreliable
+- SFARI gene group 1 is more affected than the average gene, although the number of genes with SFARI score 1 is small, so this could be unreliable
 
 - At our recent threshold of log2(1.2), we lose all genes belonging to score 1 and 2
 
@@ -237,7 +237,7 @@ lfc_counts_all = lfc_counts_all %>% filter(lfc!=-1, group!='None') %>%
 
 # Plot change of number of genes
 ggplotly(lfc_counts_all %>% ggplot(aes(lfc, perc, color=group)) + geom_point(aes(id=n)) + geom_line() + 
-         scale_color_manual(values=SFARI_colour_hue(r=1:8)) + ylab('% of remaining probes') + 
+         scale_color_manual(values=SFARI_colour_hue(r=1:8)) + ylab('% of remaining genes') + 
          geom_vline(xintercept = log2(1.2), color='#d9d9d9') +   
          ggtitle('Effect of filtering thresholds by SFARI score') + theme_minimal())
 

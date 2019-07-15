@@ -29,8 +29,8 @@ SFARI_colour_hue = function(r) {
 
 ### Load data
 
-Metadata downloaded using getGEO, expression data downloaded manually from the Supplementary file GSE59288_exp_mRNA.txt.gz and Probe information extracted using biomaRt
-```{r, warning=FALSE, message=FALSE}
+Metadata downloaded using getGEO, expression data downloaded manually from the Supplementary file GSE59288_exp_mRNA.txt.gz and gene information extracted using biomaRt
+```{r load_data, warning=FALSE, message=FALSE}
 # LOAD METADATA
 if(!file.exists('./../Data/Voineagu/GSE59288_exp_mRNA.txt.gz')){
   GSE59288 = getGEO('GSE59288', destdir='./../Data/Liu/')  
@@ -53,15 +53,15 @@ datExpr = read.delim(gz_file) %>% dplyr::select(aut1:aut34)
 colnames(datExpr) = rownames(datMeta)
 
 
-# ANNOTATE PROBES
+# ANNOTATE GENES
 getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
             'end_position','strand','band','gene_biotype','percentage_gc_content')
 mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
                dataset='hsapiens_gene_ensembl',
                host='feb2014.archive.ensembl.org') ## Gencode v19
-datProbes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
-datProbes = datProbes[match(rownames(datExpr), datProbes$ensembl_gene_id),]
-datProbes$length = datProbes$end_position-datProbes$start_position
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datGenes = datGenes[match(rownames(datExpr), datGenes$ensembl_gene_id),]
+datGenes$length = datGenes$end_position-datGenes$start_position
 
 
 # SFARI Genes
@@ -102,41 +102,41 @@ summary(datMeta$age)
 
 ### Filtering
 <br>
-1. Filter probes with start or end position missing
+1. Filter genes with start or end position missing
 ```{r}
-to_keep = !is.na(datProbes$length)
-datProbes = datProbes[to_keep,]
+to_keep = !is.na(datGenes$length)
+datGenes = datGenes[to_keep,]
 datExpr = datExpr[to_keep,]
-rownames(datProbes) = datProbes$ensembl_gene_id
+rownames(datGenes) = datGenes$ensembl_gene_id
 
-print(paste0('Removed ', sum(!to_keep), 'probe, ', sum(to_keep), ' remaining'))
+print(paste0('Removed ', sum(!to_keep), 'gene, ', sum(to_keep), ' remaining'))
 ```
 <br>
-2. Filter probes with low expression levels
+2. Filter genes with low expression levels
 
 The density distribution doesn't seem to suggest any clearly defined threshold. Selecting 1.2, which is the point where the slope changes at the beginning of the distribution
-```{r, warning=FALSE, fig.width=10}
+```{r filter_low_expression, warning=FALSE, fig.width=10}
 plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr))
 ggplotly(plot_data %>% ggplot(aes(x=mean_expression)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) + 
               geom_vline(xintercept=1.2, color='gray') + scale_x_log10() + 
-              ggtitle('Probe Mean Expression distribution') + theme_minimal())
+              ggtitle('gene Mean Expression distribution') + theme_minimal())
 
 to_keep = rowMeans(datExpr)>1.2
-datProbes = datProbes[to_keep,]
+datGenes = datGenes[to_keep,]
 datExpr = datExpr[to_keep,]
 
-print(paste0('Removed ', sum(!to_keep), ' probe, ', sum(to_keep), ' remaining'))
+print(paste0('Removed ', sum(!to_keep), ' gene, ', sum(to_keep), ' remaining'))
 ```
 <br>
 3. Filter outlier samples
 
 Using node connectivity as a distance measure, normalising it and filtering out genes farther away than 2 standard deviations from the left (lower connectivity than average, not higher)
 
-- Using $s_{ij}=|bw(i,j)|$ to define connectivity between probes.
+- Using $s_{ij}=|bw(i,j)|$ to define connectivity between genes.
 
 - Filtering a single data point
 
-```{r, warning=FALSE}
+```{r outlier_samples, warning=FALSE}
 absadj = datExpr %>% bicor %>% abs
 netsummary = fundamentalNetworkConcepts(absadj)
 ku = netsummary$Connectivity
@@ -159,7 +159,7 @@ rm(absadj, netsummary, ku, z.ku, plot_data, to_keep)
 ```
 
 ```{r}
-print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' probes and ', ncol(datExpr), ' samples'))
+print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
 ```
 <br><br>
 
@@ -167,7 +167,7 @@ print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' probe
 ### Mean and SD by SFARI score
 
 **No clear relation between SFARI score and mean expression/SD**. This dataset doesn't seem to have the same problem as Gandal's
-```{r, warning=FALSE, fig.width=10}
+```{r SFARI_score_mean_SD, warning=FALSE, fig.width=10}
 plot_data = data.frame('ID'=rownames(datExpr), 'MeanExpr'=rowMeans(datExpr), 'SDExpr'=apply(datExpr,1,sd)) %>% 
             left_join(gene_info, by='ID')
 
@@ -198,8 +198,8 @@ rm(plot_data)
 ```
 
 We cannot use DESeq2 normalisation because the entries are not counts, but RPKM, so using limma instead
-```{r}
-dge = DGEList(counts=datExpr, samples=datMeta, genes=datProbes)
+```{r normalisation}
+dge = DGEList(counts=datExpr, samples=datMeta, genes=datGenes)
 
 # Calculate Normalisation factors
 dge = calcNormFactors(dge)
@@ -213,7 +213,7 @@ logCPM = cpm(dge, log=TRUE)
 # Extract elements
 datExpr = logCPM %>% data.frame
 datMeta = dge$samples
-datProbes = dge$genes
+datGenes = dge$genes
 ```
 
 Data seems to be homoscedastic
@@ -266,11 +266,11 @@ rm(pca, plot_data)
 ```
 <br>
 
-#### Probes
+#### Genes
 
 - First Principal Component explains 86% of the total variance (less than in Gandal and BrainSpan)
 
-- There's a really strong correlation between the mean expression of a probe and the 1st principal component
+- There's a really strong correlation between the mean expression of a gene and the 1st principal component
 
 ```{r pca_genes, warning=FALSE, message=FALSE}
 pca = datExpr %>% prcomp
@@ -306,4 +306,20 @@ subplot(p1, p2, nrows=1)
 
 rm(plot_data, p1, p2)
 ```
+<br><br>
+
+---
+
+#### Save preprocessed dataset
+```{r save_preprocessed_dataset}
+save(datExpr, datMeta, datGenes, file='./../Data/Liu/preprocessed_data.RData')
+```
 <br>
+
+---
+
+#### Session info
+```{r session_info}
+sessionInfo()
+```
+<br><br>

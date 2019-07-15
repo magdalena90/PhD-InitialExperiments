@@ -1,0 +1,275 @@
+---
+title: 'Gandal vs BrainSpan using voom'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) #; library(plotlyutils)
+library(biomaRt) ; library(lumi) ; library(DESeq2) ; library(limma) ; library(cqn)
+library(AnnotationDbi) ; library(illuminaHumanv4.db) ; library(samr)
+library(venneuler)
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n-2)
+  pal = c(hcl(h = hues, l = 65, c = 100)[1:(n-3)], '#666666', '#8c8c8c', '#bfbfbf')
+}
+```
+
+Filtering criteria:
+
+- Gandal:
+
+  - Keep only control samples
+  
+  - Keep probes with expression > 0 in at least half of the samples
+  
+- BrainSpan:
+
+  - Keep only Temporal and Frontal lobe samples
+  
+  - Keep probes with mean expression larger than 0.005
+  
+- Both:
+  
+  - Keep probes present in both datasets
+
+```{r load_datasets}
+# Load Gandal's Dataset
+if(file.exists('./../Data/Gandal_RNASeq.RData')){
+  
+  load('./../Data/Gandal_RNASeq.RData')
+  
+  datExpr_Gandal = datExpr %>% dplyr::select(which(colnames(datExpr) %in% rownames(datMeta[datMeta$Diagnosis_=='CTL',])))
+  datMeta_Gandal = datMeta %>% filter(Diagnosis_=='CTL')
+  datProbes_Gandal = datProbes
+  DE_info_Gandal = DE_info
+  
+} else print('Gandal_RNASeq.RData does not exist. Find how to create it in 04_26_Gandal_RNASeq_exploratory_analysis.RData')
+
+# Load BrainSpan's Dataset
+if(file.exists('./../Data/BrainSpan_filtered.RData')){
+  
+  load('./../Data/BrainSpan_filtered.RData')
+  
+  datExpr_BrainSpan = datExpr
+  datMeta_BrainSpan = datMeta
+  datProbes_BrainSpan = datProbes
+  DE_info_BrainSpan = DE_info
+  
+} else print('BrainSpan_raw.RData does not exist. Find how to create it in 05_14_BrainSpan_exploratory_analysis.RData')
+
+rm(datExpr, datMeta, datProbes, DE_info)
+
+# Probe comparison
+paste0('After filtering, Gandal has ', nrow(datExpr_Gandal),' probes and BrainSpan has ', 
+       nrow(datExpr_BrainSpan),', of which they share ',
+       sum(rownames(datExpr_Gandal) %in% rownames(datExpr_BrainSpan)))
+
+all_probes = unique(c(rownames(datExpr_Gandal), rownames(datExpr_BrainSpan)))
+
+DE_genes_df = data.frame('Gandal' = all_probes %in% rownames(datExpr_Gandal),
+                         'BrainSpan' = all_probes %in% rownames(datExpr_BrainSpan))
+rownames(DE_genes_df) = all_probes
+
+plot(venneuler(DE_genes_df))
+
+# Filter to keep only common probes
+datExpr_Gandal = datExpr_Gandal[rownames(datExpr_Gandal) %in% rownames(datExpr_BrainSpan),]
+datProbes_Gandal = datProbes_Gandal[rownames(datProbes_Gandal) %in% rownames(datExpr_Gandal),]
+
+datExpr_BrainSpan = datExpr_BrainSpan[rownames(datExpr_BrainSpan) %in% rownames(datExpr_Gandal),]
+datProbes_BrainSpan = datProbes_BrainSpan[rownames(datProbes_BrainSpan) %in% rownames(datExpr_BrainSpan),]
+
+# write.csv(rownames(datExpr_Gandal), file='./../Data/Gandal_BrainSpan_probes.csv', row.names=FALSE)
+
+rm(all_probes, DE_genes_df)
+```
+<br>
+
+#### Normalise Gandal dataset
+
+Normalisation method: voom for variance stabilisation
+
+* BrainSpan data is log2 transformed because it seems like it hasn't been yet transformed
+
+According to https://ucdavis-bioinformatics-training.github.io/2018-June-RNA-Seq-Workshop/thursday/DE.html, if the voom plot looks like the plot below, we should increase the filtering threshold for low expressed genes
+```{r Normalise_Gandal}
+v = voom(datExpr_Gandal, plot=TRUE)
+rm(v)
+```
+
+Filtering all genes with mean expression lower than 1
+```{r}
+to_keep = rowMeans(datExpr_Gandal)>1
+
+datExpr_Gandal = datExpr_Gandal[to_keep,]
+datExpr_BrainSpan = datExpr_BrainSpan[to_keep,]
+
+datProbes_Gandal = datProbes_Gandal[to_keep,]
+datProbes_BrainSpan = datProbes_BrainSpan[to_keep,]
+
+print(paste0('Keeping ', sum(to_keep), ' genes'))
+```
+
+This is supposed to be a good result for voom
+```{r voom_2nd_try}
+datExpr_Gandal = voom(datExpr_Gandal, plot=TRUE)
+```
+
+#### Mean vs SD
+
+Data is not homoscedastic, same as with the simple log2 transformation, the genes with the highest mean seems to be the most affected by the transformation
+```{r, warning=FALSE}
+plot_data = data.frame('ID'=rownames(datExpr_Gandal$E), 'mean'=rowMeans(datExpr_Gandal$E), 'sd'=apply(datExpr_Gandal$E,1,sd)) %>%
+            left_join(SFARI_genes, by='ID') %>% mutate('gene-score' = factor(`gene-score`))
+
+ggplotly(plot_data %>% ggplot(aes(mean, sd, color=`gene-score`)) + geom_point(alpha=0.2) + ggtitle('Gandal dataset') + theme_minimal())
+
+rm(plot_data)
+```
+
+
+```{r, warning=FALSE}
+datExpr_BrainSpan = log2(datExpr_BrainSpan+1)
+
+plot_data = data.frame('ID'=rownames(datExpr_BrainSpan), 'mean'=rowMeans(datExpr_BrainSpan), 'sd'=apply(datExpr_BrainSpan,1,sd)) %>%
+            left_join(SFARI_genes, by='ID') %>% mutate('gene-score' = factor(`gene-score`))
+
+ggplotly(plot_data %>% ggplot(aes(mean, sd, color=`gene-score`)) + geom_point(alpha=0.2) + ggtitle('BrainSpan dataset') + theme_minimal())
+
+rm(plot_data)
+```
+
+<br>
+
+### Create artificial binary classifier
+
+Assigning a label to each subject, so different samples from the same subject share class, as it would happen with real ASD samples
+
+Gandal dataset:
+```{r create_fake_class_Gandal}
+fake_class = data.frame('Subject_ID' = unique(datMeta_Gandal$Subject_ID),
+                        'fake' = rbinom(length(unique(datMeta_Gandal$Subject_ID)), 1, 0.5))
+datMeta_Gandal = datMeta_Gandal %>% left_join(fake_class, by='Subject_ID')
+
+table(datMeta_Gandal$fake)
+```
+
+BrainSpan dataset:
+```{r create_fake_class_BrainSpan}
+fake_class = data.frame('donor_id' = unique(datMeta_BrainSpan$donor_id),
+                        'fake' = rbinom(length(unique(datMeta_BrainSpan$donor_id)), 1, 0.5))
+datMeta_BrainSpan = datMeta_BrainSpan %>% left_join(fake_class, by='donor_id')
+
+table(datMeta_BrainSpan$fake)
+```
+<br>
+
+#### Perform DEA
+
+Following Gandal's preprocessing script (limma lmFit), removing robust parameter to improve running time for BrainSpan
+
+```{r DEA_Gandal}
+# Gandal dataset:
+mod = model.matrix(~fake, data=datMeta_Gandal)
+corfit = duplicateCorrelation(datExpr_Gandal, mod, block=datMeta_Gandal$Subject_ID)
+lmfit = lmFit(datExpr_Gandal, design=mod, block=datMeta_Gandal$Subject_ID, correlation=corfit$consensus)
+
+fit = eBayes(lmfit, trend=T)
+top_genes = topTable(fit, coef=2, number=nrow(datExpr_Gandal))
+new_DE_info_Gandal = top_genes[match(rownames(datExpr_Gandal), rownames(top_genes)),]
+
+new_DE_info_Gandal$signif_p_val = new_DE_info_Gandal$adj.P.Val<0.05
+new_DE_info_Gandal$signif_lfc = abs(new_DE_info_Gandal$logFC)>log2(1.2)
+new_DE_info_Gandal$signif = new_DE_info_Gandal$signif_p_val & new_DE_info_Gandal$signif_lfc
+
+new_DE_info_Gandal = new_DE_info_Gandal %>% mutate('ID'=rownames(.)) %>% left_join(SFARI_genes, by='ID') %>%
+                     dplyr::select(ID, logFC, AveExpr, P.Value, adj.P.Val, signif_p_val, signif_lfc, signif,
+                                   `gene-score`, syndromic) %>% mutate(`gene-score` = as.factor(`gene-score`))
+
+rm(mod, corfit, lmfit, fit, top_genes)
+```
+
+```{r DEA_BrainSpan}
+# BrainSpan dataset:
+mod = model.matrix(~fake, data=datMeta_BrainSpan)
+corfit = duplicateCorrelation(datExpr_BrainSpan, mod, block=datMeta_BrainSpan$donor_id)
+lmfit = lmFit(datExpr_BrainSpan, design=mod, block=datMeta_BrainSpan$donor_id, correlation=corfit$consensus)
+
+fit = eBayes(lmfit, trend=T)
+top_genes = topTable(fit, coef=2, number=nrow(datExpr_BrainSpan))
+new_DE_info_BrainSpan = top_genes[match(rownames(datExpr_BrainSpan), rownames(top_genes)),]
+
+new_DE_info_BrainSpan$signif_p_val = new_DE_info_BrainSpan$adj.P.Val<0.05
+new_DE_info_BrainSpan$signif_lfc = abs(new_DE_info_BrainSpan$logFC)>log2(1.2)
+new_DE_info_BrainSpan$signif = new_DE_info_BrainSpan$signif_p_val & new_DE_info_BrainSpan$signif_lfc
+
+new_DE_info_BrainSpan = new_DE_info_BrainSpan %>% mutate('ID'=rownames(.)) %>% left_join(SFARI_genes, by='ID') %>%
+                        dplyr::select(ID, logFC, AveExpr, P.Value, adj.P.Val, signif_p_val, signif_lfc, signif,
+                                      `gene-score`, syndromic) %>% mutate(`gene-score` = as.factor(`gene-score`))
+
+
+rm(mod, corfit, lmfit, fit, top_genes)
+```
+<br>
+
+#### Compare logFC by SFARI score
+
+The relation between SFARI score and logFC weakens, maybe even disappears.
+```{r compare_logFC, fig.width=10, warning=FALSE}
+p1 = ggplotly(new_DE_info_Gandal %>% ggplot(aes(`gene-score`, abs(logFC), fill=`gene-score`)) + geom_boxplot() + 
+              scale_color_manual(values=gg_colour_hue(9)) + theme_minimal() + theme(legend.position = 'none') +
+              ggtitle('logFC in Gandal dataset (left) and in BrainSpan (right)'))
+
+p2 = ggplotly(new_DE_info_BrainSpan %>% ggplot(aes(`gene-score`, abs(logFC), fill=`gene-score`)) + geom_boxplot() + 
+              scale_color_manual(values=gg_colour_hue(9)) + theme_minimal() + theme(legend.position = 'none') +
+              ggtitle('logFC in Gandal dataset (left) and in BrainSpan (right)'))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2)
+```
+
+There isn't a strong correlation between logFC in the two datasets
+```{r, warning=FALSE}
+plot_data = new_DE_info_Gandal %>% left_join(new_DE_info_BrainSpan, by='ID') %>% 
+            mutate('gene-score'=as.factor(ifelse(is.na(`gene-score.x`), 'NA', `gene-score.x`)))
+
+corr = cor(plot_data$logFC.x, plot_data$logFC.y)
+ggplotly(plot_data %>% ggplot(aes(logFC.x, logFC.y, color=`gene-score`)) + geom_point(alpha=0.2) + 
+         geom_hline(yintercept=log2(1.2), color='#cc0099') + geom_hline(yintercept=-log2(1.2), color='#cc0099') + 
+         geom_vline(xintercept=log2(1.2), color='#cc0099') + geom_vline(xintercept=-log2(1.2), color='#cc0099') +
+         ggtitle(paste0('logFC comparison by gene corr=', round(corr,4))) + scale_color_manual(values=gg_colour_hue(9)) + 
+         xlab('Gandal') + ylab('BrainSpan') + theme_minimal())
+
+rm(corr)
+```
+
+```{r}
+for(score in sort(unique(plot_data$`gene-score`))){
+  corr = cor(plot_data$logFC.x[plot_data$`gene-score`==score], plot_data$logFC.y[plot_data$`gene-score`==score])
+  print(paste0('Correlation = ', round(corr,4), ' for SFARI score ', score))
+}
+```
+
+Concordance in significance of genes based in log Fold Change
+```{r}
+table(plot_data$signif_lfc.x, plot_data$signif_lfc.y)/nrow(plot_data)*100
+```
+<br>
+
+For both datasets, almost no genes have a significant adjusted p-value (makes sense because the classifier has no biological meaning)
+```{r}
+summary(plot_data$signif_p_val.x)
+
+summary(plot_data$signif_p_val.y)
+```
