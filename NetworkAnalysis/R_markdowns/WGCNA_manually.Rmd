@@ -1,0 +1,518 @@
+---
+title: 'WGCNA manually'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/NetworkAnalysis/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(dendextend) ; library(gplots)
+library(biomaRt) ; library(DESeq2) ; library(sva) ; library(WGCNA)
+library(doParallel)
+library(pdfCluster)
+```
+
+Load preprocessed dataset (preprocessing code in /../FirstYearReview/data_preprocessing.Rmd)
+
+```{r load_dataset, echo=TRUE, include=FALSE}
+# Gandal dataset
+load('./../../FirstYearReview/Data/Gandal/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+datGenes = datGenes %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+clusterings = list()
+
+rm(GO_annotations)
+```
+
+Keep DE genes
+```{r}
+datExpr = datExpr %>% filter(rownames(.) %in% rownames(DE_info)[DE_info$padj<0.05])
+rownames(datExpr) = datGenes$feature_id[DE_info$padj<0.05 & !is.na(DE_info$padj)]
+datGenes = datGenes %>% filter(feature_id %in% rownames(DE_info)[DE_info$padj<0.05])
+DE_info = DE_info %>% filter(padj<0.05)
+
+print(paste0('Keeping ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
+```
+<br><br>
+
+---
+
+### Define a gene co-expression similarity
+
+Using Biweight midcorrelation because it's more robust to outliers than regular correlation or Mutual Information score
+
+```{r}
+allowWGCNAThreads()
+
+# MAD = median absolute deviation
+cor_mat = datExpr %>% t %>% bicor
+```
+
+
+Correcting the correlation matrix from $s \in [-1,1]$ to $s \in [0,1]$. Two methods are proposed: $s_{ij}=|bw(i,j)|$ and $s_{ij}=\frac{1+bw(i,j)}{2}$
+
+  -Using $s_{ij}=\frac{1+bw(i,j)}{2}$, the strongest negative correlations (-1) get mapped to 0 (no correlation) and the zero correlated genes get mapped to the average correlation (0.5), which I don't think makes much sense
+  
+  -Using $s_{ij}=|bw(i,j)|$ we lose the direction of the correlation, but at least we maintain the magnitude of the correlation of all the genes. Decided to use this one
+
+```{r}
+S = abs(cor_mat)
+```
+
+#### Clustering
+
+```{r}
+clusterings = list()
+```
+
+Using 1-S as the distance matrix
+
+**1. Using average linkage**
+```{r, fig.width=10}
+dist_S = 1-S
+dend = dist_S %>% as.dist %>% hclust(method='average')
+plot(dend, hang = 0, labels=FALSE)
+
+best_h = 0.735
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dist_S))) %>% plot(ylim=c(0.7,0.85))
+abline(h=best_h, col='blue')
+
+modules = cutree(dend, h=best_h)
+clusterings[['S_avg']] = modules
+```
+
+Merge similar modules
+```{r}
+module_colors = viridis(length(table(modules)))
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+```
+
+Merging Modules (1, 2, 3, 4, 13 and 39)
+```{r, fig.width=10}
+bicor(MEs) %>% as.matrix %>% heatmap(scale='none', 
+                                     col=rev(colorRampPalette(brewer.pal(9,'YlGnBu'), bias=3)(100)))
+
+new_modules = modules %>% replace(modules %in% c(2, 3, 4, 13, 39), 1)
+
+clusterings[['S_avg_merged']] = new_modules
+
+rm(cor_mat, best_h, modules, module_colors, MEs_output, MEs, new_modules)
+```
+
+
+**2. Using complete linkage**
+```{r, fig.width=10}
+dend = dist_S %>% as.dist %>% hclust
+plot(dend, hang = 0, labels=FALSE)
+
+best_h = 0.996
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dist_S))) %>% plot(ylim=c(0.98,1))
+abline(h=best_h, col='blue')
+
+modules = cutree(dend, h=best_h)
+clusterings[['S_comp']] = modules
+```
+
+Merge similar modules
+```{r}
+module_colors = viridis(length(table(modules)))
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+```
+
+Merging Modules (3, 4, 7, 12, 16, 18 and 30)
+```{r, fig.width=10}
+bicor(MEs) %>% as.matrix %>% heatmap(scale='none', 
+                                     col=rev(colorRampPalette(brewer.pal(9,'YlGnBu'), bias=3)(100)))
+
+new_modules = modules %>% replace(modules %in% c(4, 7, 12, 16, 18, 30), 3)
+
+clusterings[['S_comp_merged']] = new_modules
+
+rm(best_h, modules, module_colors, MEs_output, MEs, new_modules, dist_S)
+```
+
+
+
+
+
+
+<br><br>
+
+---
+
+### Define a family of adjacency functions
+
+- Sigmoid function: $a(i,j)=sigmoid(s_{ij}, \alpha, \tau_0) \equiv \frac{1}{1+e^{-\alpha(s_{ij}-\tau_0)}}$
+
+- Power adjacency function: $a(i,j)=power(s_{ij}, \beta) \equiv |S_{ij}|^\beta$
+
+Chose power adjacency function over the sigmoid function because it has only one parameter to adjust and both methods are supposed to lead to very similar results if the parameters are chosen with the scale-free topology criterion.
+
+#### Choosing a parameter value
+
+Following the **scale-free topology criterion** because metabolic networks have been found to display approximate scale free topology
+
+1. Only consider those parameter values that lead to a network satisfying scale-free topology at least approximately, e.g. signed $R^2 > 0.80$
+
+```{r}
+best_power = datExpr %>% t %>% pickSoftThreshold(powerVector = 1:15, RsquaredCut=0.8)
+
+print(paste0('Best power for scale free topology: ', best_power$powerEstimate))
+```
+
+Elevate the matrix to the suggested power
+```{r}
+S_sft = S^best_power$powerEstimate
+```
+
+#### Clustering
+
+Defining the distance matrix of S_sft as 1-S_sft
+
+**1. Using average linkage**
+```{r, fig.width=10}
+dist_S_sft = 1-S_sft
+dend = dist_S_sft %>% as.dist %>% hclust(method='average')
+plot(dend, hang=0, labels=FALSE)
+
+best_h = 
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dist_S))) %>% plot(ylim=c(0.98,1))
+abline(h=best_h, col='blue')
+
+modules = cutree(dend, h=best_h)
+names(modules) = datGenes$feature_id
+
+clusterings[['S_sft']] = modules
+```
+
+Merge similar modules
+```{r}
+module_colors = viridis(best_k)
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+```
+
+Merging Modules (1, 2, 10 and 14), (6, 7, 16 and 19), (3 and 13), and (4 and 20) (same as with S)
+```{r, fig.width=10}
+bicor(MEs) %>% as.matrix %>% heatmap(scale='none', 
+                                     col=rev(colorRampPalette(brewer.pal(9,'YlGnBu'), bias=3)(100)))
+
+new_modules = modules %>% replace(modules %in% c(2, 10, 14), 1) %>% 
+                          replace(modules %in% c(7, 16, 19), 6) %>%
+                          replace(modules==13, 3) %>% replace(modules==20, 4)
+names(new_modules) = datGenes$feature_id
+
+clusterings[['S_sft_merged']] = new_modules
+
+rm(dend, best_k, modules, module_colors, MEs_output, MEs, new_modules)
+```
+<br><br>
+
+
+
+
+
+
+
+**Additional considerations**
+
+2. The mean connectivity should be high so that the network contains enough information
+
+What does high mean? using the power=5 we get a mean connectivity of 20, is this high?
+```{r}
+mean_connectivity = matrix(0, 15, 2) %>% data.frame
+colnames(mean_connectivity) = c('power','mean_connectivity')
+for(i in 1:15) mean_connectivity[i,] = c(i, mean(colSums(S^i)))
+
+ggplotly(mean_connectivity %>% ggplot(aes(power, mean_connectivity)) + ylab('mean connectivity') +
+         geom_vline(xintercept=best_power$powerEstimate, color='gray') + geom_point(color='#0099cc') + 
+         scale_y_sqrt() + theme_minimal())
+
+rm(mean_connectivity, best_power)
+```
+
+3. The slope $-\hat{\gamma}$ of the regression line between $log_{10}(p(k))$ and $log_{10}(k)$ should be around -1
+
+Slope is 2.6 times as steep as it should be (maybe because the range of k is too narrow?)
+```{r}
+k_df = data.frame('connectivity'=colSums(S_sft), 'bucket'=cut(colSums(S_sft), 10)) %>% group_by(bucket) %>%
+       dplyr::summarize(p_k=n(), k=mean(connectivity)) %>% mutate(p_k=p_k/sum(p_k))
+
+lm(log10(p_k) ~ log10(k), data=k_df)
+
+rm(k_df)
+```
+
+#### Exploratory analysis of scale free topology adjacency matrix
+
+- Degree distribution: the scale-free topology adjacency matrix does have an exponential behaviour in the degree distribution which wasn't there on the original matrix
+
+**Note:** The slope is very steep, both axis are on sqrt scale
+```{r, warning=FALSE, message=FALSE}
+plot_data = data.frame('n'=1:nrow(S)^2, 'S'=sort(melt(S)$value), 'S_sft'=sort(melt(S_sft)$value))
+
+plot_data %>% filter(n%%100==0) %>% dplyr::select(S, S_sft) %>% melt %>% 
+              ggplot(aes(value, color=variable, fill=variable)) + geom_density(alpha=0.5) + 
+              xlab('k') + ylab('p(k)') + scale_x_sqrt() + scale_y_sqrt() + theme_minimal()
+
+rm(plot_data)
+```
+
+- "To visually inspect whether approximate scale-free topology is satisfied, one plots log 10 (p(k)) versus log 10 (k). A straight line is indicative of scale-free topology"
+
+The example given in the article has a curve similar to this one and they say it's OK
+```{r}
+k_df = data.frame('connectivity'=colSums(S_sft), 'bucket'=cut(colSums(S_sft), 10)) %>% group_by(bucket) %>%
+      dplyr::summarize(p_k=n(), k=mean(connectivity)) %>% mutate(p_k=p_k/sum(p_k))
+
+# k_df %>% ggplot(aes(k,p_k)) + geom_point(color='#0099cc') + geom_smooth(method='lm', se=FALSE, color='gray') + 
+#          ylab('p(k)') + scale_x_log10() + scale_y_log10() + theme_minimal()
+
+k_df %>% ggplot(aes(log10(k),log10(p_k))) + geom_point(color='#0099cc') + geom_smooth(method='lm', se=FALSE, color='gray') + 
+         ylab('p(k)') + theme_minimal()
+```
+
+- "To measure how well a network satisfies a scale-free topology, we propose to use the square of the correlation between log10(p(k)) and log10(k), i.e. the model fitting index $R^2$ of the linear model that regresses log10(p(k)) on log10(k)"
+
+$R^2=0.83$ The $R^2$ we got from the pickSoftThreshold function
+```{r}
+lm(log10(p_k) ~ log10(k), data=k_df) %>% summary
+
+rm(k_df)
+```
+<br><br>
+
+---
+
+### Defining a measure of node dissimilarity
+
+Using topological overlap dissimilarity measure because it has been found to result in biologically meaningful modules
+
+#### Create Topological Overlap Matrix (TOM)
+
+1st quartile is already 0.9852, most of the genes are very dissimilar
+```{r}
+TOM = S_sft %>% TOMsimilarity
+dissTOM = 1-TOM
+
+rownames(dissTOM) = rownames(S_sft)
+colnames(dissTOM) = colnames(S_sft)
+
+dissTOM %>% melt %>% summary
+```
+
+#### Clustering TOM
+
+```{r, fig.width=10}
+rownames(TOM) = rownames(S_sft)
+colnames(TOM) = colnames(S_sft)
+
+dend = TOM %>% as.dist %>% hclust
+plot(dend, hang=0, labels=FALSE)
+abline(h=0.14, col='blue')
+
+best_k = 19
+```
+
+```{r}
+modules = cutree(dend, best_k)
+names(modules) = datGenes$feature_id
+
+clusterings[['TOM']] = modules
+```
+
+Merge similar modules
+```{r}
+module_colors = viridis(best_k)
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+```
+
+Merging Modules (2, 3, 4 and 8)
+```{r, fig.width=10}
+bicor(MEs) %>% as.matrix %>% heatmap(scale='none', 
+                                     col=rev(colorRampPalette(brewer.pal(9,'YlGnBu'), bias=3)(100)))
+
+new_modules = modules %>% replace(modules %in% c(3, 4, 8), 2)
+names(new_modules) = datGenes$feature_id
+
+clusterings[['TOM_merged']] = new_modules
+
+rm(S, S_sft, TOM, dend, best_k, modules, module_colors, MEs_output, MEs, new_modules)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<br><br>
+
+---
+
+### Identifying gene modules
+
+Using hierarchical clustering on the TOM-based dissimilarity matrix
+
+#### Using average linkage (following the paper)
+
+In average linkage hierarchical clustering, the distance between two clusters is defined as the average distance between each point in one cluster to every point in the other cluster. 
+
+It's not easy to determine which number of clusters is the optimal
+```{r, fig.width=10}
+dend = dissTOM %>% as.dist %>% hclust(method='average')
+plot(dend, hang=0, labels=FALSE)
+```
+
+Zooming in on the root of the dendrogram you can see that it just separates outliers and it only separates the data into two big groups until farther down. And even after this, it looks like it continues to filter out outliers almost one by one. I don't think this is ideal...
+```{r, fig.width=10}
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dissTOM))) %>% plot(ylim=c(0.99,1))
+```
+
+#### Using complete linkage
+
+In complete linkage hierarchical clustering, the distance between two clusters is defined as the longest distance between two points in each cluster.
+
+It's not easy to see where you should do the cut
+```{r, fig.width=10}
+dend = dissTOM %>% as.dist %>% hclust
+plot(dend, hang=0, labels=FALSE)
+```
+
+Zooming in on the beginning of the dendrogram it seems like maybe 14 is a good number of clusters? Although its quite arbitrary...
+```{r}
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dissTOM))) %>% plot(ylim=c(0.999,1))
+abline(h=0.99943, col='blue')
+```
+
+Looks balanced...
+```{r fig.width=10}
+best_k = 23
+
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dissTOM))) %>% set('branches_k_color', k=best_k) %>% plot
+
+modules = cutree(dend, best_k)
+names(modules) = datGenes$feature_id
+
+clusterings[['dissTOM']] = modules
+
+table(modules)
+```
+<br><br>
+
+---
+
+### Merging modules with similar expression profiles
+
+"One can relate modules to each other by correlating the corresponding module eigengenes (Horvath et al., 2005). If two modules are highly correlated, one may want to merge them"
+
+Calculate the "eigengenes" (1st principal component) of each module
+
+```{r}
+module_colors = viridis(best_k)
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+```
+
+Merging Modules 3, 5, 6, 9, 10, 11 and 14
+```{r, fig.width=10}
+bicor(MEs) %>% as.matrix %>% heatmap(scale='none', 
+                                     col=rev(colorRampPalette(brewer.pal(9,'YlGnBu'), bias=3)(100)))
+
+new_modules = modules %>% replace(modules %in% c(5,6,9,10,11,14), 3)
+
+names(new_modules) = datGenes$feature_id
+
+clusterings[['dissTOM_merged']] = new_modules
+```
+
+```{r}
+viridis_colors = viridis(best_k)
+
+dend_colors = data.frame('ID'=names(modules[labels(dend)]),
+                         'OriginalModules' = viridis_colors[as.vector(modules[labels(dend)])],
+                         'MergedModules' = viridis_colors[as.vector(new_modules[labels(dend)])])
+
+dend %>% as.dendrogram %>% set('labels', rep('', nrow(dissTOM))) %>% set('branches_k_color', k=best_k) %>% plot
+colored_bars(colors=dend_colors[,-1])
+
+rm(new_modules, MEs, dend, best_k, modules, module_colors, MEs_output, MEs, new_modules, dend_colors, viridis_colors)
+```
+<br><br>
+
+---
+
+### Exploratory analysis of the different clusterings
+
+#### Adjusted Rand Index comparison
+
+```{r adj_rand_index, fig.width = 10}
+cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
+for(i in 1:(length(clusterings))){
+  cluster1 = as.factor(clusterings[[i]])
+  for(j in (i):length(clusterings)){
+    cluster2 = as.factor(clusterings[[j]])
+    cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
+  }
+}
+colnames(cluster_sim) = names(clusterings)
+rownames(cluster_sim) = colnames(cluster_sim)
+
+cluster_sim = cluster_sim %>% as.matrix %>% round(2)
+heatmap.2(x = cluster_sim, Rowv = F, Colv = F, dendrogram = 'none', 
+          cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
+          cexRow = 1, cexCol = 1, margins = c(8,8))
+ 
+
+rm(i, j, cluster1, cluster2, cluster_sim)
+```
+
+#### PCA
+
+```{r pca, warning=FALSE, fig.width=10}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame('ID' = rownames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'PC3' = pca$x[,3],
+                       'cor_mat' = clusterings[['cor_mat']], 'cor_mat_merged' = clusterings[['cor_mat_merged']],
+                       'S' = clusterings[['S']], 'S_merged' = clusterings[['S_merged']],
+                       'S_sft' = clusterings[['S_sft']], 'S_sft_merged' = clusterings[['S_sft_merged']],
+                       'TOM' = clusterings[['TOM']], 'TOM_merged' = clusterings[['TOM_merged']],
+                       'dissTOM' = clusterings[['dissTOM']], 'dissTOM_merged' = clusterings[['dissTOM_merged']])
+
+selectable_scatter_plot(plot_data[,-1], plot_data[,-1])
+#ggplotly(plot_data %>% ggplot(aes(PC1, PC2, color=OriginalModules)) + geom_point(alpha=0.5) + theme_minimal())
+
+rm(pca, plot_data)
+```
