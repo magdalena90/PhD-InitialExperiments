@@ -1,0 +1,435 @@
+---
+title: 'Exploratory Analysis Gupta dataset'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r, echo=TRUE, include=FALSE}
+library(biomaRt)
+library(plotly) ; library(plotlyutils) ; require(gridExtra) ; library(viridis)
+library(tidyverse)
+library(WGCNA)
+library(vsn)
+library(Rtsne)
+library(edgeR)
+library(sva)
+library(glue)
+
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
+```
+
+---
+
+## Gupta normalised dataset (http://www.arkinglab.org/resources/)
+
+**Note:** Raw data can be found in the National Database for Autism Research (NDAR) under the accession code NDARCOL0002034 but you need to request access
+
+* Data preprocessing briefly described in [Transcriptome analysis of cortical tissue reveals shared sets of downregulated genes in autism and schizophrenia](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5070061/)
+
+  * Using conditional quantile normalisation
+
+### Load data
+
+**Note:** The rownames in the expression dataset have the following structure: ensemble ID + '.' + gene name + n. I have to find what the n stands for (just different measurements of the gene? polymorphisms? other?)
+```{r load_data, warning=FALSE, message=FALSE}
+# LOAD METADATA
+datMeta =  read.delim('./../Data/Gupta/AUT_pheno.txt')
+datMeta = datMeta %>% dplyr::select(-matches('PC|SV|MEDIAN|.01'))
+datMeta$age_group = cut(datMeta$Age, c(-0.5, 0, 0.6, 10, 20, 30, 40, 50, 60, 70, 80),
+                    labels=c('Fetal','Infant','Child','10-20','20s','30s','40s','50s','60s','70s'))
+
+
+# LOAD EXPRESSION DATA
+datExpr = read.delim('./../Data/Gupta/NormalizedGeneExpression_AUT.txt')
+
+
+# ANNOTATE GENES
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), 
+                 values=sub('\\..*', '', rownames(datExpr)), mart=mart)
+datGenes = datGenes[match(sub('\\..*', '', rownames(datExpr)), datGenes$ensembl_gene_id),]
+datGenes$length = datGenes$end_position-datGenes$start_position
+datGenes$ID_match_datExpr = paste(datGenes$ensembl_gene_id, gsub('-','.',datGenes$external_gene_id), sep='.')
+
+# SFARI Genes
+SFARI_genes = read_csv('./../Data/SFARI/SFARI_genes_with_ensembl_IDs.csv')
+
+
+# GO Annotations
+GO_annotations = read.csv('./../Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+
+# Combine SFARI and GO information
+gene_info = data.frame('ID'=sub('\\..*', '', rownames(datExpr))) %>% left_join(SFARI_genes, by='ID') %>% 
+            mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+            left_join(GO_neuronal, by='ID') %>% 
+            mutate('gene.score'=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`)) %>%
+            mutate('gene.score'=ifelse(is.na(gene.score), 'None', gene.score))
+
+
+rm(getinfo, mart, GO_annotations)
+```
+<br>
+
+### Check sample distribution
+
+RNA-Seq for 104 cortical brain-tissue samples across three brain regions (BA10, BA19 and BA44/45), comprising 57 samples from 40 control subjects and 47 samples from 32 ASD subjects
+
+```{r}
+print(paste0('Dataset includes ', nrow(datExpr), ' genes from ', ncol(datExpr), ' samples belonging to ', length(unique(datMeta$sampleid)), ' different subjects.'))
+```
+<br>
+
+**Diagnosis distribution:** Fairly balanced
+```{r}
+table(datMeta$Dx)
+```
+<br>
+
+**Brain region distribution:** Most samples (~60%) belong to Brodmann area 19
+
+Where: 1=BA10, 2=BA19 and 3=BA44/45
+```{r}
+table(datMeta$brainregion)
+```
+<br>
+
+Diagnosis and brain region are balanced, although not that much
+```{r}
+table(datMeta$Dx, datMeta$brainregion)
+```
+<br>
+
+**Sex distribution:** There are three times more Male samples than Female ones
+```{r}
+table(datMeta$Gender)
+```
+
+Fairly balanced
+```{r}
+table(datMeta$Dx, datMeta$Gender)
+```
+<br>
+
+**Age distribution:** Subjects between 2 and 82 years old with a mean close to 20
+```{r}
+summary(datMeta$Age)
+```
+<br>
+
+---
+
+## Filtering
+
+**Note:** There are some NAs in the expression data, but before diciding which genes/samples to remove it would be better to remove low expressed genes (maybe they have many of the NAs)
+
+```{r}
+print(paste0('There are ', sum(is.na(datExpr)), ' NAs in the expression data'))
+```
+
+1. Filter genes with low expression levels
+
+Seems like there is a really dense concentration of point with mean expression ~ -1 and sd ~ 1.3
+```{r filter_low_expression, fig.width=10}
+mean_expr = data.frame('ID'=rownames(datExpr),'Mean'=rowMeans(datExpr, na.rm=T),
+                       'SD'=apply(datExpr,1,function(x) sd(x, na.rm=T)))
+
+p1 = mean_expr %>% ggplot(aes(Mean, SD)) + geom_point(alpha=0.01, color='#0099cc') + geom_smooth(method='lm', color='gray') +
+     geom_vline(xintercept=-2.8, color='gray', linetype='dashed') + theme_minimal()
+
+p2 = mean_expr %>% ggplot(aes(Mean)) + geom_density(fill='#0099cc', color='#0099cc', alpha=0.5) + 
+     geom_vline(xintercept=-2.8, color='gray', linetype='dashed') + theme_minimal()
+
+grid.arrange(p1, p2, ncol=2)
+
+rm(mean_expr, p1, p2)
+```
+
+Filtering out genes with a mean expression lower than -2.8
+```{r}
+to_keep = rowMeans(datExpr, na.rm=TRUE)>-2.8
+datExpr = datExpr[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep, na.rm=T), ', ', sum(to_keep, na.rm=T), ' remaining'))
+
+rm(to_keep)
+```
+<br>
+
+2. Remove NAs in the data
+
+```{r}
+missing_points = is.na(datExpr)
+
+print(paste0('There are ', sum(is.na(datExpr)), ' NAs in the expression data'))
+```
+
+$\qquad$ 2.1 Filtering samples with the highest number of missing values (chose to remove the top 2 samples, which have over 8 times the average number of missing values per sample)
+
+```{r nas_by_sample, fig.width=10}
+nas_by_sample = data.frame('ID' = colnames(datExpr),
+                           'NAs' = datExpr %>% apply(2, function(x) x %>% is.na %>% sum))
+
+ggplotly(nas_by_sample %>% ggplot(aes(reorder(ID,-NAs), NAs, fill=NAs)) + geom_bar(stat='identity') + 
+         xlab('Sample') + ylab('NA count') + scale_fill_viridis() + theme_minimal() + 
+         geom_hline(yintercept=sum(is.na(datExpr))/ncol(datExpr), color='gray') + ggtitle('Missing values by sample') +
+         theme(axis.text.x = element_blank(), axis.ticks = element_blank(), legend.position='none'))
+
+print(paste0('Removing samples ', paste(nas_by_sample$ID[nas_by_sample$NAs>1300], collapse = ' and ')))
+```
+
+```{r}
+to_keep = which(!colnames(datExpr) %in% nas_by_sample$ID[nas_by_sample$NAs>1300])
+datExpr = datExpr[,to_keep]
+datMeta = datMeta[to_keep,]
+
+print(paste0('Removed ', length(!to_keep), ' samples, ', length(to_keep), ' remaining'))
+
+rm(nas_by_sample, to_keep)
+```
+<br>
+
+$\qquad$ 2.2 Filter genes with the highest number of missing values (chose to filter the genes with more than 3% missing values (3 or more))
+```{r nas_by_gene}
+nas_by_gene =  data.frame('ID' = rownames(datExpr),
+                           'NAs' = datExpr %>% apply(1, function(x) x %>% is.na %>% sum))
+
+nas_by_gene %>% ggplot(aes(NAs)) + geom_bar(fill='#0099cc') + scale_y_sqrt() + theme_minimal()
+
+to_keep = nas_by_gene$NAs<3
+datExpr = datExpr[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
+
+rm(nas_by_gene)
+```
+
+$\qquad$ 2.3 Impute missing values using the mice (Multiple Imputations by Chained Equations) package
+
+- If we decide to continue using this dataset we should impute the missing values, but for now I'm just going to remove more samples and genes until there aren't any NAs left
+
+1. Remove all samples with more than 550 missing values
+
+```{r}
+to_keep = apply(datExpr, 2, function(x) sum(is.na(x)))<550
+datExpr = datExpr[,to_keep]
+datMeta = datMeta[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep), ' samples, ', sum(to_keep), ' remaining'))
+```
+
+2. Remove all genes with missing values
+```{r}
+to_keep = apply(datExpr, 1, function(x) sum(is.na(x)))==0
+datExpr = datExpr[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
+```
+
+
+<!-- - For reliable results, they recommend that no more than 5% of the values of each variable are missing (our sparsest column has only 2% of the data missing) -->
+
+<!-- ```{r} -->
+<!-- mice_output = datExpr[1:1000,] %>% mice(blocks=datMeta$sampleid, printFlag=F, seed=123) -->
+
+<!-- datExpr_imputed = mice_output$ -->
+<!-- ``` -->
+<br>
+
+3. Filter outlier samples
+
+Using node connectivity as a distance measure, normalising it and filtering out genes farther away than 2 standard deviations from the left (lower connectivity than average, not higher)
+
+- Using $s_{ij}=|bw(i,j)|$ to define connectivity between genes.
+
+- Filtering three samples, all from different subjects but from the Harvard lab
+
+```{r outlier_samples, warning=FALSE}
+absadj = datExpr %>% bicor %>% abs
+netsummary = fundamentalNetworkConcepts(absadj)
+ku = netsummary$Connectivity
+z.ku = (ku-mean(ku))/sqrt(var(ku))
+
+plot_data = data.frame('ID'=rownames(datMeta), 'sample'=1:length(z.ku), 'distance'=z.ku, 'Age'=datMeta$age_group)
+ggplotly(plot_data %>% ggplot(aes(sample, distance, color=Age)) + geom_point() + geom_hline(yintercept=-2, color='gray') + theme_minimal())
+
+print(paste0('Outlier samples: ', paste(as.character(plot_data$ID[plot_data$distance< -2]), collapse=', ')))
+```
+
+```{r}
+to_keep = z.ku > -2
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+print(paste0('Removed ', sum(!to_keep), ' samples, ', sum(to_keep), ' remaining'))
+
+rm(absadj, netsummary, ku, z.ku, plot_data, to_keep)
+```
+
+```{r}
+print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
+```
+<br><br>
+
+### Differential Expression Analysis
+
+### Batch characterisation
+
+#### !!! ERASED THIS BY MISTAKE
+# ```{r}
+# table(datMeta$Batch, datMeta$DX)
+# ```
+
+### Looking for unknown sources of batch effects with sva
+
+Can't use svaseq because data is not log counts, so using sva instead
+```{r sva}
+mod = model.matrix(~ Dx, datMeta)
+mod0 = model.matrix(~ 1, datMeta)
+sva_fit = datExpr %>% as.matrix %>% sva(mod=mod, mod0=mod0)
+
+rm(mod, mod0)
+```
+
+Include SV estimations to datMeta information
+```{r}
+sv_data = sva_fit$sv %>% data.frame
+colnames(sv_data) = paste0('SV',1:ncol(sv_data))
+
+datMeta = cbind(datMeta, sv_data)
+
+rm(sv_data)
+```
+<br><br>
+
+### Differential Expression Analysis
+
+Using lmFit
+```{r DEA}
+mod = model.matrix(~ SV1 + SV2 + SV3 + SV4 + SV5 + Dx, data=datMeta)
+corfit = duplicateCorrelation(datExpr, mod, block=datMeta$sampleid)
+lmfit = lmFit(datExpr, design=mod, block=datMeta$sampleid, correlation=corfit$consensus)
+
+fit = eBayes(lmfit, trend=T, robust=T)
+top_genes = topTable(fit, coef=2, number=nrow(datExpr)) %>% mutate('ID'=sub('\\..*', '', rownames(.)))
+
+DE_info = gene_info %>% left_join(top_genes, by='ID')
+
+rm(mod, corfit, lmfit, fit, top_genes)
+```
+<br><br>
+
+### Visualisations
+<br>
+
+#### Samples
+
+**PCA:** There doesn't seem to be a specific pattern related to gender or age, there does seem to be a small differentiation by diagnosis in the 2nd principal component
+
+```{r pca_samples, warning=FALSE, message=FALSE, fig.width=10}
+pca = datExpr %>% t %>% prcomp
+
+plot_data = data.frame('ID'=colnames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2]) %>% 
+            left_join(datMeta, by='ID') %>% 
+            dplyr::select('PC1','PC2','Age','age_group','Gender','Dx') %>%
+            mutate('sqrt_age' = sqrt(Age))
+
+selectable_scatter_plot(plot_data, plot_data[,-c(1,2)])
+
+rm(pca, plot_data)
+```
+<br>
+
+#### Genes
+
+- First Principal Component explains 92% of the total variance
+
+- There's a really strong (negative) correlation between the mean expression of a gene and the 1st principal component
+
+- It seems like the lower expressed points that make a weird turn on the PC2 axis have a smaller PC3 value than the rest (rotate PC1,PC2 axis and it becomes visible). Haven't found what else characterises them
+
+```{r pca_genes, fig.width=10, warning=FALSE, message=FALSE}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame('PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'PC3' = pca$x[,3], 
+                       'MeanExpr'=rowMeans(datExpr), 'SD'=apply(datExpr,1,sd))
+
+plot_data %>% ggplot(aes(PC1, PC2, color=MeanExpr)) + geom_point(alpha=0.2) + theme_minimal() + 
+     scale_color_viridis() + ggtitle('PCA') +
+     xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+     ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+plot_data %>% plot_ly(x=~PC1, y=~PC2, z=~PC3) %>% add_markers(color=plot_data$MeanExpr, size=1) %>%
+    layout(title = 'PCA 3D',
+           scene = list(xaxis=list(title=glue('PC1 (',round(summary(pca)$importance[2,1]*100,2),'%)')),
+                        yaxis=list(title=glue('PC2 (',round(summary(pca)$importance[2,2]*100,2),'%)')),
+                        zaxis=list(title=glue('PC3 (',round(summary(pca)$importance[2,3]*100,2),'%)'))))
+
+rm(pca, plot_data)
+```
+<br><br>
+
+---
+
+## SFARI scores
+
+### Mean and SD
+
+**The higher the SFARI score the higher the mean expression but the lower the standard deviation**. Same as Gandal's dataset!
+```{r SFARI_score_LFC, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=sub('\\..*', '', rownames(datExpr)),
+                       'MeanExpr'=rowMeans(datExpr), 'SDExpr'=apply(datExpr,1,sd)) %>% 
+            left_join(DE_info, by='ID')
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, MeanExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              theme(legend.position='none'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(gene.score, SDExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              ggtitle('Mean Expression (left) and SD (right) by SFARI score') + 
+              theme(legend.position='none'))
+
+subplot(p1, p2, nrows=1)
+
+rm(plot_data, p1, p2)
+```
+<br>
+
+### Log Fold Change
+
+**From scores 1 through 4, the higher the SFARI score, the lower the log Fold Change**. Same behaviour as Gandal!
+```{r}
+ggplotly(DE_info %>% ggplot(aes(x=gene.score, y=abs(logFC), fill=gene.score)) + 
+         geom_boxplot() + scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + 
+         theme_minimal() + theme(legend.position='none'))
+```
+<br><br>
+
+---
+
+#### Save preprocessed dataset
+```{r save_preprocessed_dataset}
+save(datExpr, datMeta, datGenes, DE_info, file='./../Data/Gupta/preprocessed_data.RData')
+#load('./../Data/Gupta/preprocessed_data.RData')
+```
+<br>
+
+---
+
+#### Session info
+```{r session_info}
+sessionInfo()
+```
+<br><br>

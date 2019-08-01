@@ -107,6 +107,50 @@ plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilari
 labels = FALSE, hang = 0.04)
 ```
 
+```{r}
+# We like large modules, so we set the minimum module size relatively high:
+minModuleSize = 30
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM, deepSplit = 2, 
+                            pamRespectsDendro = FALSE, minClusterSize = minModuleSize)
+table(dynamicMods)
+```
+
+
+```{r}
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+sizeGrWindow(8,6)
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05,
+main = "Gene dendrogram and module colors")
+```
+
+
+### Plot PCA
+
+There doesn't seem to be a strong correlation between clusters and principal components
+```{r}
+library(missMDA)
+
+nb = datExpr %>% t %>% estim_ncpPCA
+res.comp = imputePCA(datExpr, ncp=nb$ncp)
+
+pca = res.comp$completeObs %>% t %>% prcomp
+
+plot_data = data.frame('PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'cluster'=as.factor(sub(0,NA,dynamicMods)))
+                       
+ggplotly(plot_data %>% ggplot(aes(PC1, PC2, color=cluster)) + geom_point(alpha=0.5) + theme_minimal())
+```
+
+
+
+
+
+
 
 
 

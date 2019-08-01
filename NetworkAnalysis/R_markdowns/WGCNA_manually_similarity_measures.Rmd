@@ -1,0 +1,420 @@
+---
+title: 'WGCNA manually similarity measures'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+### Set pipeline:
+
+- Define a gene co-expression similarity **comparing biweight midcorrelation vs correlation vs euclidean distance**
+
+- Performing hierarchical clustering **using average linkage hclust(method='average')**
+
+- Extracting clusters using a dynamic brach cutting approach from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf) **using Dynamic Tree**
+
+- Merging similar clusters using Module Eigengenes **comparing original clusters vs merged clusters vs two main clusters**
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/NetworkAnalysis/R_markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(dendextend) ; library(gplots)
+library(biomaRt) ; library(DESeq2) ; library(sva) ; library(WGCNA)
+library(doParallel)
+library(pdfCluster)
+```
+
+Load preprocessed dataset (preprocessing code in /../FirstYearReview/data_preprocessing.Rmd)
+
+```{r load_dataset, echo=TRUE, include=FALSE}
+# Gandal dataset
+load('./../../FirstYearReview/Data/Gandal/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+datGenes = datGenes %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+clusterings = list()
+
+rm(GO_annotations)
+```
+
+Keep DE genes
+```{r}
+datExpr = datExpr %>% filter(rownames(.) %in% rownames(DE_info)[DE_info$padj<0.05])
+rownames(datExpr) = datGenes$feature_id[DE_info$padj<0.05 & !is.na(DE_info$padj)]
+datGenes = datGenes %>% filter(feature_id %in% rownames(DE_info)[DE_info$padj<0.05])
+DE_info = DE_info %>% filter(padj<0.05)
+
+print(paste0('Keeping ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
+```
+<br><br>
+
+---
+
+## Define a gene co-expression similarity
+
+<br>
+
+### Using Biweight midcorrelation
+
+```{r}
+allowWGCNAThreads()
+
+cor_mat = datExpr %>% t %>% bicor
+```
+
+
+Correcting the correlation matrix from $s \in [-1,1]$ to $s \in [0,1]$ using $s_{ij}=|bw(i,j)|$
+
+```{r}
+S = abs(cor_mat)
+```
+
+### Clustering
+
+#### Identifying gene modules
+
+Using 1-S sa distance matrix
+
+```{r, fig.width=10}
+diss_S = 1-S
+dend = diss_S %>% as.dist %>% hclust(method='average')
+plot(dend, hang=0, labels=FALSE)
+```
+
+Using Dynamic Tree Cut, a dynamic branch cutting approach taken from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+```{r}
+modules = cutreeDynamicTree(dend, deepSplit=F, minModuleSize=20)
+names(modules) = labels(dend)
+
+clusterings[['bicor']] = modules
+```
+
+#### Merging modules with similar expression profiles
+
+Calculate the "eigengenes" (1st principal component) of each module and merging similar modules
+
+```{r, fig.width=10}
+module_colors = c('gray', viridis(max(modules)))
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])+1])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+
+# Merge similar modules
+bicor_dist = 1-bicor(MEs)
+dend_MEs = bicor_dist %>% as.dist %>% hclust(method='average')
+dend_MEs %>% as.dendrogram %>% set('labels', rep('', nrow(bicor_dist))) %>% plot(ylim=c(0, 0.6))
+abline(h=0.5, col='#0099cc')
+abline(h=0.2, col='#009999')
+
+# Two main modules
+tree_cut = cutree(dend_MEs, h=0.5)
+top_modules = modules %>% replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==1])) %>% as.numeric), 1) %>%
+                          replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==2])) %>% as.numeric), 2)
+clusterings[['bicor_top_clusters']] = top_modules
+
+# Closest modules
+tree_cut = cutree(dend_MEs, h=0.2)
+merged_modules = modules
+n=0
+for(i in sort(unique(tree_cut))){
+  n=n+1
+  merged_modules = merged_modules %>% 
+                   replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), n)
+}
+
+clusterings[['bicor_merged']] = merged_modules
+```
+
+```{r, fig.width=10}
+top_module_colors = c('gray', viridis(max(top_modules)))
+merged_module_colors = c('gray', viridis(max(merged_modules)))
+
+dend_colors = data.frame('ID'=names(modules[labels(dend)]),
+                         'OriginalModules' = module_colors[modules[dend$order]+1],
+                         'MergedModules' = merged_module_colors[merged_modules[dend$order]+1],
+                         'TopModules' = top_module_colors[top_modules[dend$order]+1])
+
+dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(diss_S))) %>% plot(ylim=c(min(dend$height),1))
+colored_bars(colors=dend_colors[,-1])
+
+rm(MEs, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, top_module_colors, dend_colors, 
+   i, diss_S)
+```
+<br>
+
+
+
+### Using Pearson correlation
+
+```{r}
+cor_mat = datExpr %>% t %>% cor
+```
+
+Correcting the correlation matrix from $s \in [-1,1]$ to $s \in [0,1]$ using $s_{ij}=|bw(i,j)|$
+
+```{r}
+S = abs(cor_mat)
+```
+
+#### Clustering
+```{r, fig.width=10}
+diss_S = 1-S
+dend = diss_S %>% as.dist %>% hclust(method='average')
+plot(dend, hang=0, labels=FALSE)
+```
+
+Using Dynamic Tree Cut, a dynamic branch cutting approach taken from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+```{r}
+modules = cutreeDynamicTree(dend, deepSplit=F, minModuleSize=20)
+names(modules) = labels(dend)
+
+clusterings[['cor']] = modules
+```
+
+Merging modules with similar expression profiles using the "eigengenes" (1st principal component) of each module and merging similar modules
+
+```{r, fig.width=10}
+module_colors = c('gray', viridis(max(modules)))
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])+1])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+
+# Merge similar modules
+bicor_dist = 1-bicor(MEs)
+dend_MEs = bicor_dist %>% as.dist %>% hclust(method='average')
+dend_MEs %>% as.dendrogram %>% set('labels', rep('', nrow(bicor_dist))) %>% plot(ylim=c(0, 0.55))
+abline(h=0.5, col='#0099cc')
+abline(h=0.2, col='#009999')
+
+# Two main modules
+tree_cut = cutree(dend_MEs, h=0.5)
+top_modules = modules %>% replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==1])) %>% as.numeric), 1) %>%
+                          replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==2])) %>% as.numeric), 2)
+clusterings[['cor_top_clusters']] = top_modules
+
+# Closest modules
+tree_cut = cutree(dend_MEs, h=0.2)
+merged_modules = modules
+n=0
+for(i in sort(unique(tree_cut))){
+  n=n+1
+  merged_modules = merged_modules %>% 
+                   replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), n)
+}
+
+clusterings[['cor_merged']] = merged_modules
+```
+
+```{r, fig.width=10}
+top_module_colors = c('gray', viridis(max(top_modules)))
+merged_module_colors = c('gray', viridis(length(unique(merged_modules))))
+
+dend_colors = data.frame('ID'=names(modules[labels(dend)]),
+                         'OriginalModules' = module_colors[modules[dend$order]+1],
+                         'MergedModules' = merged_module_colors[merged_modules[dend$order]+1],
+                         'TopModules' = top_module_colors[top_modules[dend$order]+1])
+
+dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(diss_S))) %>% plot(ylim=c(min(dend$height),1))
+colored_bars(colors=dend_colors[,-1])
+
+rm(MEs, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, top_module_colors, dend_colors, 
+   i, diss_S)
+```
+<br>
+
+### Using euclidean distance
+
+```{r}
+cor_mat = datExpr %>% dist
+```
+
+Correcting the correlation matrix to $s \in [0,1]$ using $s_{ij}=\frac{dist(i,j)-min(dist)}{max(dist)-min(dist)}$
+
+```{r}
+S = (cor_mat-min(cor_mat))/(max(cor_mat)-min(cor_mat))
+```
+
+#### Clustering
+```{r, fig.width=10}
+dend = S %>% hclust(method='average')
+plot(dend, hang=-1, labels=FALSE)
+```
+
+Using Dynamic Tree Cut, a dynamic branch cutting approach taken from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+```{r}
+modules = cutreeDynamicTree(dend, deepSplit=F, minModuleSize=20)
+names(modules) = labels(dend)
+clusterings[['euc']] = modules
+```
+
+Merging modules with similar expression profiles using the "eigengenes" (1st principal component) of each module and merging similar modules
+
+```{r, fig.width=10}
+module_colors = c('gray', viridis(max(modules)))
+
+MEs_output = datExpr %>% t %>% moduleEigengenes(colors=module_colors[as.vector(modules[labels(dend)])+1])
+MEs = MEs_output$eigengenes
+colnames(MEs) = sapply(colnames(MEs), function(x) paste0('Mod',which(module_colors == substring(x,3))) )
+
+# Merge similar modules
+bicor_dist = 1-bicor(MEs)
+dend_MEs = bicor_dist %>% as.dist %>% hclust(method='average')
+dend_MEs %>% as.dendrogram %>% set('labels', rep('', nrow(bicor_dist))) %>% plot(ylim=c(0, 0.18))
+abline(h=0.15, col='#0099cc')
+abline(h=0.04, col='#009999')
+
+# Two main modules
+tree_cut = cutree(dend_MEs, h=0.15)
+top_modules = modules %>% replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==1])) %>% as.numeric), 1) %>%
+                          replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==2])) %>% as.numeric), 2)
+clusterings[['euc_top_clusters']] = top_modules
+
+# Closest modules
+tree_cut = cutree(dend_MEs, h=0.04)
+merged_modules = modules
+n=0
+for(i in sort(unique(tree_cut))){
+  n=n+1
+  merged_modules = merged_modules %>% 
+                   replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), n)
+}
+
+clusterings[['euc_merged']] = merged_modules
+```
+
+```{r, fig.width=10}
+top_module_colors = c('gray', viridis(max(top_modules)))
+merged_module_colors = c('gray', viridis(length(unique(merged_modules))))
+
+dend_colors = data.frame('ID'=names(modules[labels(dend)]),
+                         'OriginalModules' = module_colors[modules[dend$order]+1],
+                         'MergedModules' = merged_module_colors[merged_modules[dend$order]+1],
+                         'TopModules' = top_module_colors[top_modules[dend$order]+1])
+
+dend %>% as.dendrogram(hang=-1) %>% set('labels', rep('', nrow(datExpr))) %>% plot(ylim=c(min(dend$height),0.6))
+colored_bars(colors=dend_colors[,-1])
+
+rm(MEs, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, top_module_colors, dend_colors, i)
+```
+<br>
+
+
+<br><br>
+
+---
+
+### Exploratory analysis of clustering
+
+#### Adjusted Rand Index comparison
+
+```{r adj_rand_index, fig.width = 10}
+cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
+for(i in 1:(length(clusterings))){
+  cluster1 = sub(0, NA, clusterings[[i]]) %>% as.factor
+  for(j in (i):length(clusterings)){
+    cluster2 = sub(0, NA, clusterings[[j]]) %>% as.factor
+    cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
+  }
+}
+colnames(cluster_sim) = names(clusterings)
+rownames(cluster_sim) = colnames(cluster_sim)
+
+cluster_sim = cluster_sim %>% as.matrix %>% round(2)
+heatmap.2(x = cluster_sim, Rowv = F, Colv = F, dendrogram = 'none', col=rev(brewer.pal(9,'YlOrRd'))[4:9],
+          cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
+          cexRow = 1, cexCol = 1, margins = c(12,12))
+ 
+
+rm(i, j, cluster1, cluster2, cluster_sim)
+```
+
+#### PCA
+
+Cluster don't follow any strong patterns, at least in the first principal components
+```{r pca, warning=FALSE, fig.width=10, fig.height=8}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame('ID' = rownames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2], 
+                       'PC3' = pca$x[,3], 'PC4' = pca$x[,4], 'PC5' = pca$x[,5],
+                       'bicor' = sub(0,NA,clusterings[['bicor']]) %>% as.factor, 
+                       'bicor_top_clusters' = sub(0,NA,clusterings[['bicor_top_clusters']]) %>% as.factor, 
+                       'bicor_merged' = sub(0,NA,clusterings[['bicor_merged']]) %>% as.factor, 
+                       'cor' = sub(0,NA,clusterings[['cor']]) %>% as.factor, 
+                       'cor_top_clusters' = sub(0,NA,clusterings[['cor_top_clusters']]) %>% as.factor, 
+                       'cor_merged' = sub(0,NA,clusterings[['cor_merged']]) %>% as.factor,
+                       'euc' = sub(0,NA,clusterings[['euc']]) %>% as.factor, 
+                       'euc_top_clusters' = sub(0,NA,clusterings[['euc_top_clusters']]) %>% as.factor, 
+                       'euc_merged' = sub(0,NA,clusterings[['euc_merged']]) %>% as.factor)
+
+selectable_scatter_plot(plot_data[,-1,], plot_data[,-1])
+
+rm(pca, plot_data)
+```
+<br><br>
+---
+
+### Conclusions
+
+- Using Euclidean distance creates clusters defined by their mean expression, perhaps it's not a good metric because it doesn't seem to capture any more complex behaviours in the data
+
+- It is interesting that the Euclidean distance top clusters don't group together on the 1st PC and instead form stripes along it
+
+- Correlation based distance metrics seem to capture a type of structure in the data not related to the first principal components
+
+- **I think biweight midcorrelation may be the best choice because it's more robust than correlation**
+
+<br><br>
+
+---
+
+#### Save clusterings
+
+```{r save_clusterings}
+
+clusterings_file = './../../FirstYearReview/Data/Gandal/clusterings.csv'
+
+if(file.exists(clusterings_file)){
+
+  df = read.csv(clusterings_file, row.names=1)
+  
+  if(!all(rownames(df) == rownames(datExpr))) stop('Gene ordering does not match the one in clusterings.csv!')
+  
+  for(clustering in names(clusterings)){
+    df = df %>% mutate(!!clustering := sub(0, NA, clusterings[[clustering]]))
+    rownames(df) = rownames(datExpr)
+  }
+  
+} else {
+  
+  df = clusterings %>% unlist %>% matrix(nrow=length(clusterings), byrow=T) %>% t %>% data.frame %>% na_if(0)
+  colnames(df) = names(clusterings)
+  rownames(df) = rownames(datExpr)
+
+}
+
+write.csv(df, file=clusterings_file)
+
+rm(clusterings_file, df, clustering)
+```
+
+---
+
+#### Session info
+```{r}
+sessionInfo()
+```
+<br><br>

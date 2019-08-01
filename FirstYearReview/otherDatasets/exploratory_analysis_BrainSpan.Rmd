@@ -1,0 +1,315 @@
+---
+title: 'Exploratory Analysis BrainSpan'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r, echo=TRUE, include=FALSE}
+library(biomaRt)
+library(plotly) ; library(plotlyutils) ; require(gridExtra) ; library(viridis)
+library(tidyverse)
+library(WGCNA)
+library(vsn)
+library(Rtsne)
+library(glue)
+
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
+```
+
+---
+
+## BrainSpan normalised dataset (http://www.brainspan.org/static/download.html)
+
+Downloaded file RNA-Seq Gencode v3c summarized to genes containing 'normalized RPKM expression values employing a historical normalization method'
+
+* Data preprocessing described in [Developmental Transcriptome documentation](http://help.brain-map.org/display/devhumanbrain/Documentation?_ga=2.158797562.1300088417.1564485622-1829562672.1564485622)
+
+### Load data
+```{r, echo=TRUE, include=FALSE}
+# Load csvs (Downloaded from 'RNA-Seq Gencode v10 summarized to genes' in http://www.brainspan.org/static/download.html)
+datExpr = read.csv('./../Data/BrainSpan/expression_matrix.csv', header=FALSE)
+datMeta = read.csv('./../Data/BrainSpan/columns_metadata.csv')
+geneInfo = read.csv('./../Data/BrainSpan/rows_metadata.csv')
+
+# Remove index column in datExpr
+cols = datExpr %>% colnames
+datExpr = datExpr %>% dplyr::select(-V1)
+colnames(datExpr) = cols[-length(cols)]
+
+# Make sure rows match
+if(!all(rownames(datExpr) == geneInfo$row_num)){
+ stop('Columns in datExpr don\'t match the rows in datMeta!') 
+}
+
+# Assign row names
+rownames(datMeta) = paste0('V', datMeta$column_num)
+rownames(datExpr) = geneInfo$ensembl_gene_id
+
+# Annotate probes
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org') ## Gencode v19
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datGenes = datGenes[match(rownames(datExpr), datGenes$ensembl_gene_id),]
+datGenes$length = datGenes$end_position-datGenes$start_position
+
+
+# Group brain regions by lobes
+datMeta$Brain_Region = as.factor(datMeta$structure_acronym)
+datMeta$Brain_lobe = 'Other'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('Ocx','V1C')] = 'Occipital'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('M1C-S1C','DFC','OFC','VFC','M1C')] = 'Frontal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('PCx','IPC', 'S1C')] = 'Parietal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('AMY','MGE','STC','ITC','HIP','TCx','A1C')] = 'Temporal'
+datMeta$Brain_lobe[datMeta$Brain_Region %in% c('MFC')] = 'Limbic'
+datMeta$Brain_lobe=factor(datMeta$Brain_lobe, levels=c('Frontal', 'Temporal', 'Parietal', 'Occipital','Limbic','Other'))
+
+# Create complementary age variables
+datMeta = datMeta %>% mutate('age_stage' = gsub('.* ','',age))
+datMeta = datMeta %>% mutate('age_numeric' = case_when(grepl('pcw', age) ~ as.numeric(gsub(' pcw','',age))/52,
+                                                       grepl('mos', age) ~ as.numeric(gsub(' mos','',age))/12,
+                                                       TRUE ~ as.numeric(gsub(' yrs','',age)) ))
+
+
+# SFARI Genes
+SFARI_genes = read_csv('./../Data/SFARI/SFARI_genes_with_ensembl_IDs.csv')
+
+
+# GO Annotations
+GO_annotations = read.csv('./../Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+
+# Combine SFARI and GO information
+gene_info = data.frame('ID'=rownames(datExpr)) %>% left_join(SFARI_genes, by='ID') %>% 
+            mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+            left_join(GO_neuronal, by='ID') %>% 
+            mutate('gene.score'=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`)) %>%
+            mutate('gene.score'=ifelse(is.na(gene.score), 'None', gene.score))
+
+
+rm(cols, getinfo, mart, GO_annotations, geneInfo)
+```
+<br>
+
+Remove faulty genes
+```{r}
+to_keep = !is.na(datGenes$length)
+datGenes = datGenes[to_keep,]
+datExpr = datExpr[to_keep,]
+gene_info = gene_info[to_keep,]
+rownames(datGenes) = datGenes$ensembl_gene_id
+```
+
+### Check sample distribution
+
+RNA-Seq for 524 cortical brain-tissue samples across 26 brain regions belonging to 42 subjects
+
+```{r}
+print(paste0('Dataset includes ', nrow(datExpr), ' genes from ', ncol(datExpr), ' samples belonging to ', length(unique(datMeta$donor_id)), ' different subjects.'))
+```
+<br>
+
+**Brain region distribution:**
+
+```{r}
+table(datMeta$Brain_Region)
+```
+
+Grouped by lobe:
+```{r}
+table(datMeta$Brain_lobe)
+```
+<br>
+
+**Sex distribution:** Fairly balanced
+```{r}
+table(datMeta$gender)
+```
+<br>
+
+**Age distribution:**
+```{r}
+summary(datMeta$age)
+```
+<br>
+
+---
+
+## Filtering
+
+1. Filter genes with low expression levels
+
+There is a big concentration of genes with very low values and a threshold of 0.5 seems to separate them from the rest of the data.
+```{r filter_low_expression, fig.width=10, warning=FALSE}
+mean_expr = data.frame('ID'=rownames(datExpr),'Mean'=rowMeans(datExpr, na.rm=T),
+                       'SD'=apply(datExpr,1,function(x) sd(x, na.rm=T)))
+
+mean_expr %>% ggplot(aes(Mean+1)) + geom_density(fill='#0099cc', color='#0099cc', alpha=0.5) + 
+     geom_vline(xintercept=1.5, color='gray', linetype='dashed') + scale_x_log10() + theme_minimal()
+
+rm(mean_expr)
+```
+
+Filtering out genes with a mean expression lower than 0.5
+```{r}
+to_keep = rowMeans(datExpr, na.rm=TRUE)>0.5
+datExpr = datExpr[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep, na.rm=T), ' genes, ', sum(to_keep, na.rm=T), ' remaining'))
+
+rm(to_keep)
+```
+<br>
+
+3. Filter outlier samples
+
+Using node connectivity as a distance measure, normalising it and filtering out genes farther away than 2 standard deviations from the left (lower connectivity than average, not higher)
+
+- Using $s_{ij}=|bw(i,j)|$ to define connectivity between genes.
+
+- Filtering three samples, all from different subjects but from the Harvard lab
+
+```{r outlier_samples, warning=FALSE}
+absadj = datExpr %>% bicor %>% abs
+netsummary = fundamentalNetworkConcepts(absadj)
+ku = netsummary$Connectivity
+z.ku = (ku-mean(ku))/sqrt(var(ku))
+
+plot_data = data.frame('ID'=rownames(datMeta), 'sample'=1:length(z.ku), 'distance'=z.ku, 'brainLobe'=datMeta$Brain_lobe)
+ggplotly(plot_data %>% ggplot(aes(sample, distance, color=brainLobe)) + geom_point() + 
+         geom_hline(yintercept=-2, color='gray') + theme_minimal())
+
+print(paste0('Outlier samples: ', paste(as.character(plot_data$ID[plot_data$distance< -2]), collapse=', ')))
+```
+
+```{r}
+to_keep = z.ku > -2
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+print(paste0('Removed ', sum(!to_keep), ' samples, ', sum(to_keep), ' remaining'))
+
+rm(absadj, netsummary, ku, z.ku, plot_data, to_keep)
+```
+
+```{r}
+print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
+```
+<br><br>
+
+### Visualisations
+<br>
+
+Log transforming the data to help visualisations
+```{r}
+datExpr_transformed = log2(datExpr+1)
+```
+
+#### Samples
+
+**PCA:** The main recognisable pattern separates the samples by age, with the biggest separation between preconception and postconception samples. Brain lobe doesn't seem to be an important factor
+
+```{r pca_samples, warning=FALSE, message=FALSE, fig.width=10}
+pca = datExpr_transformed %>% t %>% prcomp
+
+plot_data = data.frame('ID'=as.numeric(gsub('V','',colnames(datExpr))), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2]) %>% 
+            left_join(datMeta, by=c('ID'='column_num')) %>%
+            dplyr::select('PC1','PC2','age_numeric','age_stage','Brain_lobe','gender')
+
+selectable_scatter_plot(plot_data, plot_data[,-c(1,2)])
+
+rm(pca, plot_data)
+```
+<br>
+
+#### Genes
+
+- First Principal Component explains 81% of the total variance
+
+- There's a really strong (negative) correlation between the mean expression of a gene and the 1st principal component
+
+```{r pca_genes, fig.width=10, warning=FALSE, message=FALSE}
+pca = datExpr_transformed %>% prcomp
+
+plot_data = data.frame('PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'PC3' = pca$x[,3], 
+                       'MeanExpr'=rowMeans(datExpr_transformed), 'SD'=apply(datExpr_transformed,1,sd))
+
+plot_data %>% ggplot(aes(PC1, PC2, color=MeanExpr)) + geom_point(alpha=0.3) + theme_minimal() + 
+              scale_color_viridis() + ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+rm(pca, plot_data)
+```
+<br><br>
+
+### Mean and SD by SFARI score
+
+#### Original data
+**The higher the SFARI score the higher the mean expression**, and probably the higher the standard deviation, although that relation is not as clear
+```{r SFARI_score_mean_SD, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=sub('\\..*', '', rownames(datExpr)),
+                       'MeanExpr'=rowMeans(datExpr), 'SDExpr'=apply(datExpr,1,sd)) %>% 
+            left_join(gene_info, by='ID')
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, MeanExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              theme(legend.position='none'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(gene.score, SDExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              ggtitle('Mean Expression (left) and SD (right) by SFARI score') + 
+              theme(legend.position='none'))
+
+subplot(p1, p2, nrows=1)
+
+rm(plot_data, p1, p2)
+```
+<br><br>
+
+#### Log transformed data
+**The higher the SFARI score the higher the mean expression**, and probably the lower the standard deviation as well, although that relation is not as clear, again.
+```{r SFARI_score_mean_SD_log2, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=sub('\\..*', '', rownames(datExpr_transformed)),
+                       'MeanExpr'=rowMeans(datExpr_transformed),
+                       'SDExpr'=apply(datExpr_transformed,1,sd)) %>% 
+            left_join(gene_info, by='ID')
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, MeanExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              theme(legend.position='none'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(gene.score, SDExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              ggtitle('Mean Expression (left) and SD (right) by SFARI score') + 
+              theme(legend.position='none'))
+
+subplot(p1, p2, nrows=1)
+
+rm(plot_data, p1, p2)
+```
+---
+
+#### Save cleaned dataset
+```{r save_preprocessed_dataset}
+save(datExpr, datMeta, datGenes, gene_info, file='./../Data/BrainSpan/cleaned_data.RData')
+#load('./../Data/Gupta/preprocessed_data.RData')
+```
+<br>
+
+---
+
+#### Session info
+```{r session_info}
+sessionInfo()
+```
+<br><br>

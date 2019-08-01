@@ -1,0 +1,528 @@
+---
+title: 'DE Gene Clustering'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/Gandal')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(GGally)
+library(ConsensusClusterPlus)
+library(JADE) ; library(MineICA) ; library(moments) ; library(fdrtool)
+library(ClusterR)
+library(WGCNA)
+library(pdfCluster) ; library(gplots) ; library(dendextend)
+```
+
+Load preprocessed dataset (preprocessing code in data_preprocessing.Rmd)
+```{r load_data, echo=TRUE, include=FALSE, warning=FALSE, message=FALSE}
+# Gandal dataset
+load('./../Data/Gandal/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# SFARI Genes
+SFARI_genes = read_csv('./../Data/SFARI/SFARI_genes_with_ensembl_IDs.csv')
+
+# GO Annotations
+GO_annotations = read.csv('./../Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+# Add SFARI scores and Neuronal functionality to DE_info
+DE_info = DE_info %>% mutate('ID'=rownames(.)) %>% left_join(SFARI_genes, by='ID') %>% 
+  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`),
+         'syndromic'=ifelse(is.na(syndromic), 0, syndromic)) %>%
+  distinct(ID, .keep_all = TRUE) %>% left_join(GO_neuronal, by='ID') %>%
+  mutate(Neuronal=ifelse(is.na(Neuronal), 0, Neuronal)) %>%
+  mutate(gene.score=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`))
+
+rm(GO_annotations)
+```
+
+```{r}
+glue('Number of genes: ', nrow(datExpr), '\n',
+     'Number of samples: ', ncol(datExpr), ' (', sum(datMeta$Diagnosis_=='ASD'), ' ASD, ',
+     sum(datMeta$Diagnosis_!='ASD'), ' controls)')
+```
+
+#### Keep only differentially expressed genes
+
+5838 genes don't have an adjusted p-value because they have less mean normalized counts than the optimal threshold [link](https://support.bioconductor.org/p/76144/), so they are going to be considered not to be significant
+```{r}
+plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr), 
+                       'SFARI_score'=DE_info$`gene-score`!='None',
+                       'DExpressed'=DE_info$padj<0.05)
+ggplotly(plot_data %>% ggplot(aes(x=mean_expression, fill=DExpressed, color=DExpressed)) + geom_density(alpha=0.3) + 
+         scale_x_log10() + ggtitle('gene Mean Expression distribution') + theme_minimal())
+```
+
+We lose almost all of the genes with SFARI score
+```{r}
+
+plot_data_SFARI = plot_data %>% filter(SFARI_score)
+ggplotly(plot_data_SFARI %>% ggplot(aes(x=mean_expression, fill=DExpressed, color=DExpressed)) + geom_density(alpha=0.3) + 
+              ggtitle('gene Mean Expression distribution for SFARI Genes') + scale_y_sqrt() + theme_minimal())
+
+table(plot_data$DExpressed[plot_data$SFARI_score], useNA='ifany')
+
+print(paste0('Losing ', round(100*(1-mean(plot_data$DExpressed[plot_data$SFARI_score==TRUE], na.rm=T)),1), 
+             '% of the genes with SFARI score'))
+
+datExpr = datExpr[plot_data$DExpressed & !is.na(plot_data$DExpressed),]
+DE_info = DE_info[plot_data$DExpressed & !is.na(plot_data$DExpressed),]
+datGenes = datGenes[plot_data$DExpressed & !is.na(plot_data$DExpressed),]
+
+rm(plot_data, plot_data_SFARI)
+```
+
+#### Dimensionality reduction using PCA
+
+To make calculations more efficient for the more time consuming methods, we can perform PCA and keep the first 16 principal components which explain over 99.5% of the total variance
+```{r}
+pca = prcomp(datExpr)
+datExpr_redDim = pca$x %>% data.frame %>% dplyr::select(PC1:PC16)
+```
+
+## Clustering Methods
+
+```{r initiate_clusterings_list}
+clusterings = list()
+
+clusterings[['SFARI_score']] = DE_info$`gene-score`
+names(clusterings[['SFARI_score']]) = rownames(DE_info)
+
+clusterings[['SFARI_bool']] = DE_info$`gene-score`!='None'
+names(clusterings[['SFARI_bool']]) = rownames(DE_info)
+
+clusterings[['syndromic']] = DE_info$syndromic==1
+names(clusterings[['syndromic']]) = rownames(DE_info)
+```
+<br><br>
+
+### K-means clustering
+
+```{r k_means}
+set.seed(123)
+wss = sapply(1:10, function(k) kmeans(datExpr, k, iter.max=200, nstart=25,
+                                      algorithm='MacQueen')$tot.withinss)
+plot(wss, type='b', main='K-Means Clustering')
+best_k = 4
+abline(v = best_k, col='blue')
+
+datExpr_k_means = kmeans(datExpr, best_k, iter.max=100, nstart=25)
+clusterings[['km']] = datExpr_k_means$cluster
+```
+
+<br><br>
+
+### Hierarchical Clustering
+
+Chose k=9 as best number of clusters. SFARI genes seem to group in the last two clusters
+
+```{r hierarchical_clustering, warning=FALSE, fig.width=12, fig.height=6}
+h_clusts = datExpr %>% dist %>% hclust
+plot(h_clusts, hang = -1, cex = 0.6, labels=FALSE)
+abline(h=19, col='blue')
+best_k = 10
+```
+
+SFARI and Neuronal related genes seem to concentrate mainly in the aqua, blue and pink clusters
+
+```{r hierarchical_clustering_colored, warning=FALSE, fig.width=10, fig.height=6}
+clusterings[['hc']] = cutree(h_clusts, best_k)
+
+create_viridis_dict = function(){
+  min_score = clusterings[['SFARI_score']] %>% as.numeric %>% min(na.rm=TRUE)
+  max_score = clusterings[['SFARI_score']] %>% as.numeric %>% max(na.rm=TRUE)
+  viridis_score_cols = viridis(max_score - min_score + 1)
+  names(viridis_score_cols) = seq(min_score, max_score)
+  
+  return(viridis_score_cols)
+}
+
+viridis_score_cols = create_viridis_dict()
+
+dend_meta = DE_info[match(labels(h_clusts), DE_info$ID),] %>% 
+            mutate('SFARI_score' = viridis_score_cols[`gene-score`],                     # Purple: 2, Yellow: 6
+                   'SFARI_bool' = ifelse(`gene-score` != 'None', '#21908CFF', 'white'),  # Acqua
+                   'Syndromic' = ifelse(syndromic == T, 'orange', 'white'),
+                   'Neuronal' = ifelse(ID %in% GO_neuronal$ID, '#666666','white')) %>% 
+            dplyr::select(SFARI_score, SFARI_bool, Syndromic, Neuronal)
+
+h_clusts %>% as.dendrogram %>% set('labels', rep('', nrow(datMeta))) %>% 
+             set('branches_k_color', k=best_k) %>% plot
+colored_bars(colors=dend_meta)
+```
+<br><br>
+
+### Consensus Clustering
+
+Samples are grouped into two big clusters, and then many outliers.
+
+```{r consensus_clustering, echo=FALSE, message=FALSE}
+# cc_output = datExpr_redDim %>% as.matrix %>% t %>% ConsensusClusterPlus(maxK=20, reps=5, seed=123,
+#                                                    title='./../Data/Gandal/consensusClustering/genes_DE/l1', plot='png')
+# save(cc_output, file='./../Data/Gandal/consensusClustering/genes_DE/l1/cc_output.RData')
+load('./../Data/Gandal/consensusClustering/genes_DE/l1/cc_output.RData')
+best_k = 3 # 2 clusters and outliers
+clusterings[['cc_l1']] = cc_output[[best_k]]$consensusClass
+
+# NO SUBCLUSTERS
+# clusterings[['cc_l2']] = clusterings[['cc_l1']]
+# cc_output_c1 = datExpr_redDim %>% filter(clusterings[['cc_l1']]==1) %>% as.matrix %>% t %>%
+#   ConsensusClusterPlus(maxK=10, reps=20, seed=123, title='./../Data/Gandal/consensusClustering/genes_DE/l2_1/', plot='png')
+# best_k = 1 # No subclusters
+# clusterings[['cc_l2']][clusterings[['cc_l1']]==1] = cc_output_c1[[best_k]]$consensusClass %>%
+#                                                     sapply(function(x) glue('1_', x))
+# 
+# cc_output_c2 = datExpr_redDim %>% filter(clusterings[['cc_l1']]==2) %>% as.matrix %>% t %>%
+#   ConsensusClusterPlus(maxK=10, reps=20, seed=123, title='./../Data/Gandal/consensusClustering/genes_DE/l2_2/', plot='png')
+# #load('./../Data/Gandal/consensusClustering/genes_DE/l2_2/cc_output.RData')
+# best_k = 1 # No subclusters
+# clusterings[['cc_l2']][clusterings[['cc_l1']]==2] = cc_output_c2[[best_k]]$consensusClass %>%
+#                                                     sapply(function(x) glue('2_', x))
+```
+
+```{r, echo=FALSE, out.width = '50%'}
+knitr::include_graphics('./../Data/Gandal/consensusClustering/genes_DE/l1/consensus003.png')
+```
+<br>
+*The rest of the output plots can be found in the Data/Gandal/consensusClustering/genes_DE/ folder
+<br><br>
+
+### Independent Component Analysis
+
+Following [this paper's](www.journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1002367) guidelines:
+
+0. Run PCA and keep enough components to explain 60% of the variance (keeping 99.5% of the variance)
+
+1. Run ICA with that same number of nbComp as principal components kept to then filter them
+
+2. Select components with kurtosis > 3
+
+3. Assign genes to clusters with FDR<0.01 using the fdrtool package
+
+```{r ICA, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+ICA_output = datExpr_redDim %>% runICA(nbComp=ncol(datExpr_redDim), method='JADE')
+signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
+ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F, verbose=F)$qval<0.01) %>% data.frame
+ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
+
+clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+ICA_clusters_names = colnames(ICA_clusters)
+for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+
+clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
+```
+
+Leaves 76% of the genes without a cluster
+```{r, fig.width=12}
+ICA_clusters %>% rowSums %>% table
+
+# ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2, Var1)) + 
+#   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
+#   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
+```
+
+Trying again these time with all of the principal components and 40 clusters
+```{r ICA_more_components, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+ICA_output = pca$x %>% data.frame %>% runICA(nbComp=40, method='JADE')
+signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
+ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F, verbose=F)$qval<0.01) %>% data.frame
+ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
+```
+
+Doesn't make a big difference (69%), but it's still better
+```{r, fig.width=12}
+ICA_clusters %>% rowSums %>% table
+
+clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+ICA_clusters_names = colnames(ICA_clusters)
+for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+
+clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
+
+# ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2, Var1)) + 
+#   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
+#   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
+```
+<br><br>
+
+### WGCNA
+
+**Note:** This method does not work with the reduced version of datExpr.
+
+```{r WGCNA, warning=FALSE}
+best_power = datExpr %>% t %>% pickSoftThreshold(powerVector = seq(1, 30, by=2))
+network = datExpr %>% t %>% blockwiseModules(power=best_power$powerEstimate, numericLabels=T)
+clusterings[['WGCNA']] = network$colors
+names(clusterings[['WGCNA']]) = rownames(datExpr)
+```
+
+It leaves 1211 genes without a cluster (~40%)
+```{r}
+clusterings[['WGCNA']] %>% table
+```
+<br><br>
+
+### Gaussian Mixture Models with hard thresholding
+
+The BIC decreases monotonically, but it seems to stabilise at bit at 14
+```{r GMM}
+n_clust = datExpr %>% Optimal_Clusters_GMM(max_clusters=40, criterion='BIC', plot_data=FALSE)
+plot(n_clust, type='l', main='Bayesian Information Criterion to choose number of clusters')
+abline(v=14, col='blue')
+best_k = 14
+gmm = datExpr %>% GMM(best_k)
+clusterings[['GMM']] = gmm$Log_likelihood %>% apply(1, which.max)
+```
+
+<!-- Plot of clusters with their centroids in gray -->
+<!-- ```{r GMM_plot} -->
+<!-- gmm_points = rbind(datExpr, setNames(data.frame(gmm$centroids), names(datExpr))) -->
+<!-- gmm_labels = c(clusterings[['GMM']], rep(NA, best_k)) %>% as.factor -->
+<!-- ggplotly(gmm_points %>% ggplot(aes(x=PC1, y=PC2, color=gmm_labels)) + geom_point() + theme_minimal()) -->
+<!-- ``` -->
+<br><br>
+
+### Manual Clustering
+
+Separating the two clouds of points into two clusters
+```{r Manual}
+intercept=-0.2
+slope=0.02
+manual_clusters = as.factor(as.numeric(slope*datExpr_redDim$PC1 + intercept > datExpr_redDim$PC2))
+names(manual_clusters) = rownames(datExpr_redDim)
+clusterings[['Manual']] = manual_clusters
+
+datExpr_redDim %>% ggplot(aes(PC1, PC2, color=manual_clusters)) + geom_point(alpha=0.3) + 
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)')) +
+              geom_abline(intercept=intercept, slope=slope, color='gray') +
+              theme_minimal() + ggtitle('PCA')
+
+clusterings[['Manual']] %>% table
+
+rm(intercept, slope, pca)
+```
+Both the aqua and the salmon clusters seem to be componsed of three Gaussians in the Mean and SD plots.
+```{r Manual_density_plots, fig.width = 10}
+manual_clusters_data = cbind(apply(datExpr_redDim, 1, mean), apply(datExpr_redDim, 1, sd), 
+                             manual_clusters) %>% data.frame
+colnames(manual_clusters_data) = c('mean','sd','cluster')
+manual_clusters_data = manual_clusters_data %>% mutate('cluster'=as.factor(cluster))
+p1 = manual_clusters_data %>% ggplot(aes(x=mean, color=cluster, fill=cluster)) + 
+  geom_density(alpha=0.4) + theme_minimal()
+p2 = manual_clusters_data %>% ggplot(aes(x=sd, color=cluster, fill=cluster)) + 
+  geom_density(alpha=0.4) + theme_minimal()
+grid.arrange(p1, p2, ncol=2)
+```
+
+Separate genes into four and two Gaussians, respectively by their mean expression:
+```{r Manual_plus_mean, fig.width = 10}
+
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+c1_mean = manual_clusters_data %>% filter(cluster==1) %>% dplyr::select(mean)
+rownames(c1_mean) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='1']
+gmm_c1_mean = c1_mean %>% GMM(3)
+
+c2_mean = manual_clusters_data %>% filter(cluster==2) %>% dplyr::select(mean)
+rownames(c2_mean) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='2']
+gmm_c2_mean = c2_mean %>% GMM(3)
+
+clusterings[['Manual_mean']] = as.character(clusterings[['Manual']])
+clusterings[['Manual_mean']][clusterings[['Manual']]==0] = gmm_c1_mean$Log_likelihood %>% 
+  apply(1, function(x) glue('1_',which.max(x)))
+clusterings[['Manual_mean']][clusterings[['Manual']]==1] = gmm_c2_mean$Log_likelihood %>% 
+  apply(1, function(x) glue('2_',which.max(x)))
+
+
+plot_gaussians = manual_clusters_data %>% ggplot(aes(x=mean)) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[1],
+                args=list(mean=gmm_c1_mean$centroids[1], sd=gmm_c1_mean$covariance_matrices[1])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[2],
+                args=list(mean=gmm_c1_mean$centroids[2], sd=gmm_c1_mean$covariance_matrices[2])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[3],
+                args=list(mean=gmm_c1_mean$centroids[3], sd=gmm_c1_mean$covariance_matrices[3])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[4],
+                args=list(mean=gmm_c2_mean$centroids[1], sd=gmm_c2_mean$covariance_matrices[1])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[5],
+                args=list(mean=gmm_c2_mean$centroids[2], sd=gmm_c2_mean$covariance_matrices[2])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(6)[6],
+                args=list(mean=gmm_c2_mean$centroids[3], sd=gmm_c2_mean$covariance_matrices[3])) +
+  theme_minimal()
+
+plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_mean']]))) + 
+          geom_point() + theme_minimal()
+
+grid.arrange(plot_gaussians, plot_points, ncol=2)
+
+clusterings[['Manual_mean']] %>% table
+```
+Separate clusters into three Gaussians per diagnosis by their sd:
+```{r Manual_plus_SD, fig.width = 12}
+
+n_clusters = 3
+
+c1_sd = manual_clusters_data %>% filter(cluster==1) %>% dplyr::select(sd)
+rownames(c1_sd) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='1']
+gmm_c1_sd = c1_sd %>% GMM(n_clusters)
+
+c2_sd = manual_clusters_data %>% filter(cluster==2) %>% dplyr::select(sd)
+rownames(c2_sd) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='2']
+gmm_c2_sd = c2_sd %>% GMM(n_clusters)
+
+clusterings[['Manual_sd']] = as.character(clusterings[['Manual']])
+clusterings[['Manual_sd']][clusterings[['Manual']]==0] = gmm_c1_sd$Log_likelihood %>% 
+  apply(1, function(x) glue('1_',which.max(x)))
+clusterings[['Manual_sd']][clusterings[['Manual']]==1] = gmm_c2_sd$Log_likelihood %>% 
+  apply(1, function(x) glue('2_',which.max(x)))
+
+
+plot_gaussians = manual_clusters_data %>% ggplot(aes(x=sd)) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[1],
+                args=list(mean=gmm_c1_sd$centroids[1], sd=gmm_c1_sd$covariance_matrices[1])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[2], 
+                args=list(mean=gmm_c1_sd$centroids[2], sd=gmm_c1_sd$covariance_matrices[2])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[3], 
+                args=list(mean=gmm_c1_sd$centroids[3], sd=gmm_c1_sd$covariance_matrices[3])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[4],
+                args=list(mean=gmm_c2_sd$centroids[1], sd=gmm_c2_sd$covariance_matrices[1])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[5],
+                args=list(mean=gmm_c2_sd$centroids[2], sd=gmm_c2_sd$covariance_matrices[2])) +
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[6],
+                args=list(mean=gmm_c2_sd$centroids[3], sd=gmm_c2_sd$covariance_matrices[3])) +
+  theme_minimal()
+
+
+plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_sd']]))) + 
+          geom_point() + theme_minimal()
+
+grid.arrange(plot_gaussians, plot_points, ncol=2)
+
+clusterings[['Manual_sd']] %>% table
+
+rm(c1_sd, c2_sd, gmm_c1_sd, gmm_c2_sd)
+```
+
+```{r clean_workspace, warning=FALSE}
+# Clean up the environment a bit
+rm(wss, datExpr_k_means, h_clusts, cc_output, best_k, ICA_output, ICA_clusters_names, signals_w_kurtosis, 
+   n_clust, gmm, network, best_power, c, manual_clusters, manual_clusters_data, c1_mean, c2_mean, 
+   gmm_c1_mean, gmm_c2_mean, p1, p2, dend_meta, plot_gaussians, plot_points, n_clusters, viridis_score_cols, 
+   gg_colour_hue, create_viridis_dict)
+```
+
+## Compare clusterings
+
+Using Adjusted Rand Index:
+
+* Clusterings are not very similar except for K-Means, Hierarchical clustering and Gaussian Mixtures Model (which all do vertical clusterings)
+
+* No clustering method resembles the SFARI scores at all
+
+* Manual + Mean and Manual + SD resemble a bit K-means clustering and Hierarchical clustering
+
+```{r adj_rand_index, fig.width = 12}
+cluster_sim = data.frame(matrix(nrow = length(clusterings), ncol = length(clusterings)))
+for(i in 1:(length(clusterings))){
+  cluster1 = as.factor(clusterings[[i]])
+  for(j in (i):length(clusterings)){
+    cluster2 = as.factor(clusterings[[j]])
+    cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
+  }
+}
+colnames(cluster_sim) = names(clusterings)
+rownames(cluster_sim) = colnames(cluster_sim)
+
+cluster_sim = cluster_sim %>% as.matrix %>% round(2)
+heatmap.2(x = cluster_sim, Rowv = FALSE, Colv = FALSE, dendrogram = 'none', 
+          cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
+          cexRow = 1, cexCol = 1, margins = c(7,7))
+ 
+
+rm(i, j, cluster1, cluster2, cluster_sim)
+```
+### Scatter plots
+
+* The simple clustering methods only consider the 1st component, dividing by vertical lines
+
+* GMM does vertical clusters when using the complete expression matrix but round, small clusters when using the reduced version
+
+* WGCNA clusters don't seem to have a strong relation with the first principal components
+
+* SFARI genes seem to be everywhere (perhaps a bit more concentrated on the right side of the plot)
+
+* 1st PC seems to reflect the average level of expression of the genes
+
+* There seems to be a change in behaviour around PC1=0 (CC)
+
+```{r scatter_plot_data}
+plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
+              mutate(ID = rownames(.),                                 k_means = as.factor(clusterings[['km']]),
+                hc = as.factor(clusterings[['hc']]),                   cc = as.factor(clusterings[['cc_l1']]),
+                ica = as.factor(clusterings[['ICA_min']]),
+                n_ica = as.factor(rowSums(ICA_clusters)),              gmm = as.factor(clusterings[['GMM']]),
+                wgcna = as.factor(clusterings[['WGCNA']]),             manual = as.factor(clusterings[['Manual']]),
+                manual_mean = as.factor(clusterings[['Manual_mean']]), manual_sd = as.factor(clusterings[['Manual_sd']]),   
+                SFARI = as.factor(clusterings[['SFARI_score']]),       SFARI_bool = as.factor(clusterings[['SFARI_bool']]),
+                syndromic = as.factor(clusterings[['syndromic']])) %>%
+              bind_cols(DE_info[DE_info$ID %in% rownames(datExpr_redDim),]) %>% 
+              mutate(avg_expr = log2(rowMeans(datExpr)+1)[rownames(datExpr) %in% rownames(datExpr_redDim)])
+rownames(plot_points) = plot_points$ID
+```
+
+```{r selectable_scatter_plot, warning=FALSE, fig.width = 12, fig.height=8}
+selectable_scatter_plot(plot_points, plot_points)
+```
+<br><br>
+
+---
+
+#### Save clusterings
+
+```{r save_clusterings}
+
+clusterings_file = './../Data/Gandal/clusterings.csv'
+
+if(file.exists(clusterings_file)){
+
+  df = read.csv(clusterings_file, row.names=1)
+  
+  if(!all(rownames(df) == rownames(datExpr))) stop('Gene ordering does not match the one in clusterings.csv!')
+  
+  for(clustering in names(clusterings)){
+    df = df %>% mutate(!!clustering := as.factor(sub(0, NA, clusterings[[clustering]])))
+    rownames(df) = rownames(datExpr)
+  }
+  
+} else {
+  
+  df = clusterings %>% unlist %>% matrix(nrow=length(clusterings), byrow=T) %>% t %>% data.frame %>% na_if(0)
+  colnames(df) = names(clusterings)
+  rownames(df) = rownames(datExpr)
+
+}
+
+write.csv(df, file=clusterings_file)
+
+rm(clusterings_file, df, clustering)
+```
+
+---
+
+#### Session info
+```{r}
+sessionInfo()
+```
+<br><br>

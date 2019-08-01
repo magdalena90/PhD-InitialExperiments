@@ -1,0 +1,160 @@
+---
+title: 'Clusterings Comparisons'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/NetworkAnalysis/R_markdowns')
+
+library(tidyverse) ; library(plotly) ; library(plotlyutils) ; 
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(dendextend) ; library(gplots)
+library(pdfCluster)
+library(WGCNA)
+```
+<br>
+
+Load data
+
+```{r load_datasets}
+
+# Load clusterings
+clusterings = read.csv('./../../FirstYearReview/Data/Gandal/clusterings.csv', row.names=1)
+
+# Gandal dataset
+load('./../../FirstYearReview/Data/Gandal/preprocessed_data.RData')
+datExpr = datExpr[rownames(datExpr) %in% rownames(clusterings),] %>% data.frame
+datGenes = datGenes %>% data.frame
+DE_info = DE_info[rownames(DE_info) %in% rownames(clusterings),] %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+
+rm(GO_annotations)
+```
+
+### Compare two-class clusterings
+
+```{r}
+two_class_clusterings = clusterings %>% dplyr::select(contains('top_clusters'))
+colnames(two_class_clusterings) = sub('_top_clusters', '', colnames(two_class_clusterings))
+```
+
+#### Number of unclassified genes
+
+- Complete linkage results in the biggest ammount of unclassified gene by far
+
+- Converting the adjacency matrix (S) to a scale free topology increases from 33 to 939 the number of unclassified genes, but using the topological overlap matrix reduces this a little (to 792)
+
+- The Dynamic Hybrid algorithm only leaves one gene without classification while the Dynamic Tree algorithm leaves 792 out
+
+- The euclidean distance is the distance that leaves the least amount of genes unclassified, then the biweight midcorrelation and then Pearson's correlation (but the numbers are very similar for the three)
+
+
+```{r fig.width=10}
+na_dist = data.frame('clustering'=colnames(two_class_clusterings), 
+                     'genes'=apply(two_class_clusterings,2,function(x) sum(is.na(x))))
+
+ggplotly(na_dist %>% ggplot(aes(reorder(clustering, -genes), genes, fill=-genes)) + geom_bar(stat='identity') + 
+         ggtitle('Number of unclassified genes') + xlab('Experiment') + theme_minimal() + #scale_y_sqrt() +
+         theme(legend.position='none', axis.text.x=element_text(angle=90, hjust=1)))
+
+rm(na_dist)
+```
+
+#### Adjusted Rand Index
+
+- No clustering seems to be significantly related to Neuronal genes
+```{r}
+cluster_comp = two_class_clusterings %>% 
+               mutate('Neuronal'=ifelse(rownames(two_class_clusterings) %in% GO_neuronal$ID,1,0))
+
+cluster_sim = matrix(nrow = ncol(cluster_comp), ncol=ncol(cluster_comp)) %>% data.frame
+for(i in 1:(ncol(cluster_comp))){
+  cluster1 = cluster_comp[,i]
+  for(j in (i):ncol(cluster_comp)){
+    cluster2 = cluster_comp[,j]
+    cluster_sim[i,j] = adj.rand.index(cluster1, cluster2)
+  }
+}
+colnames(cluster_sim) = colnames(cluster_comp)
+rownames(cluster_sim) = colnames(cluster_sim)
+
+cluster_sim = cluster_sim %>% as.matrix %>% round(2)
+heatmap.2(x = cluster_sim, Rowv = F, Colv = F, dendrogram = 'none', col=rev(brewer.pal(9,'YlOrRd'))[4:9],
+          cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
+          cexRow = 1, cexCol = 1, margins = c(8,8))
+ 
+
+rm(i, j, cluster1, cluster2, cluster_sim, cluster_comp)
+```
+
+#### Dendrogram
+
+For the base dendrogram, using the final preprocessing chosen:
+
+- Gene co-expression similarity meassure: Biweight midcorrelation
+
+- Transformation so $S \in [0,1]$: $|S|$
+
+- Scale free opology: power transformation with $beta=5$
+
+- Using TOM
+
+- Average linkage hierarchical clustering
+
+```{r calculate_dendrogram}
+allowWGCNAThreads()
+S = datExpr %>% t %>% bicor %>% abs
+S_sft = S^5
+TOM = S_sft %>% TOMsimilarity
+dissTOM = 1-TOM
+
+rownames(dissTOM) = rownames(S_sft)
+colnames(dissTOM) = colnames(S_sft)
+
+dend = dissTOM %>% as.dist %>% hclust(method='average')
+
+rm(S, S_sft, TOM, dissTOM)
+```
+
+- The adjusted rand index was right, the different clusterings have nothing in common except for perhaps leaving unclassified genes near the root of the tree
+
+**Note:** TOM, avg_linkage and dynamic tree are actually the same clustering, just used to compare different experiments. Same happens with S and bicor.
+
+```{r plot_dendrogram, fig.width=10}
+top_module_colors = viridis(2)
+dend_colors = two_class_clusterings %>% arrange(match(rownames(datExpr), labels(dend))) %>% 
+              mutate_all(function(x) ifelse(is.na(x), 'gray', top_module_colors[x])) %>%
+              mutate('Neuronal'=ifelse(labels(dend) %in% GO_neuronal$ID, '#cc3399', 'gray')) %>%
+              dplyr::select(euc, cor, bicor, S, S_sft, TOM, comp_linkage, avg_linkage, dynamic_hybrid,
+                            dynamic_tree, Neuronal)
+
+dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(datExpr))) %>% plot(ylim=c(min(dend$height)-0.1,1))
+colored_bars(colors=dend_colors, y_shift=0.67)
+
+rm(dend_colors, top_module_colors)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

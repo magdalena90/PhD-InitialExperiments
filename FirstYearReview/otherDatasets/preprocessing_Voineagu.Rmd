@@ -1,0 +1,40 @@
+---
+title: 'Preprocessing Voineagu dataset'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+### Voinegau dataset [GSE28521](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE28521)
+```{r}
+library(GEOquery)
+
+```
+
+Cannot use getGEO because everything is in different places
+```{r}
+# Supplementary file GSE28521_non-normalized_data.txt.gz
+gz_file = gzfile('./../Data/Voineagu/GSE28521_non-normalized_data.txt.gz','rt')
+datExpr = read.delim(gz_file)
+
+GSE28521 = getGEO('GSE28521', destdir='./../Data/Voineagu/', AnnotGPL = TRUE)
+
+a = getGEO(filename='./../Data/Voineagu/GSE28521_family.soft.gz')
+```
+
+
+```{r, warning=FALSE}
+if(!file.exists('./../Data/Voineagu/GSE28521_non_normalized_data.txt.gz')){
+  GSE28521 = getGEO('GSE28521', destdir='./../Data/Voineagu/')  
+} else{
+  GSE28521 = getGEO(filename='./../Data/Voineagu/GSE28521_series_matrix.txt.gz')
+}
+
+gds858 <- getGEO('GDS28521', destdir=".")
+
+a = getGEO('GSE28521', destdir='./../Data/Voineagu/', GSEMatrix=FALSE) 
+
+datExpr = exprs(GSE28521)
+datMeta = pData(GSE28521)
+datProbes = fData(GSE28521)
+```

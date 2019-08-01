@@ -1,9 +1,23 @@
 ---
-title: 'WGCNA manually condensed'
+title: 'WGCNA manually hclust methods comparison'
 output:
   html_document:
     code_folding: 'hide'
 ---
+
+### Set pipeline:
+
+- Using biweight correlation as correlation metric
+
+- Elevating the correlation matrix to the best power for scale-free topology
+
+- Using a Topological Overlap Matrix as distance matrix
+
+- Using hierarchical clustering **comparing average linkage vs complete linkage**
+
+- Extracting clusters using Dynamic Tree Cut from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+- Merging similar clusters using Module Eigengenes **comparing original clusters vs merged clusters vs two main clusters**
 
 ```{r, echo=TRUE, include=FALSE}
 #setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/NetworkAnalysis/R_markdowns')
@@ -63,9 +77,9 @@ cor_mat = datExpr %>% t %>% bicor
 
 Correcting the correlation matrix from $s \in [-1,1]$ to $s \in [0,1]$. Two methods are proposed: $s_{ij}=|bw(i,j)|$ and $s_{ij}=\frac{1+bw(i,j)}{2}$
 
-  -Using $s_{ij}=\frac{1+bw(i,j)}{2}$, the strongest negative correlations (-1) get mapped to 0 (no correlation) and the zero correlated genes get mapped to the average correlation (0.5), which I don't think makes much sense
+- Using $s_{ij}=\frac{1+bw(i,j)}{2}$, the strongest negative correlations (-1) get mapped to 0 (no correlation) and the zero correlated genes get mapped to the average correlation (0.5), which I don't think makes much sense
   
-  -Using $s_{ij}=|bw(i,j)|$ we lose the direction of the correlation, but at least we maintain the magnitude of the correlation of all the genes. Decided to use this one
+- Using $s_{ij}=|bw(i,j)|$ we lose the direction of the correlation, but at least we maintain the magnitude of the correlation of all the genes. Decided to use this one
 
 ```{r}
 S = abs(cor_mat)
@@ -257,25 +271,31 @@ clusterings[['avg_linkage_top_clusters']] = top_modules
 
 # Closest modules
 tree_cut = cutree(dend_MEs, h=0.228)
-for(i in unique(tree_cut)){
-  merged_modules = modules %>% replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), i)
+merged_modules = modules
+n=0
+for(i in sort(unique(tree_cut))){
+  n=n+1
+  merged_modules = merged_modules %>% 
+                   replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), n)
 }
 
 clusterings[['avg_linkage_merged']] = merged_modules
 ```
 
 ```{r, fig.width=10}
+merged_module_colors = c('gray', viridis(length(unique(merged_modules))))
 top_module_colors = c('gray', viridis(max(top_modules)))
 
 dend_colors = data.frame('ID'=names(modules[labels(dend)]),
                          'OriginalModules' = module_colors[modules[dend$order]+1],
-                         'MergedModules' = module_colors[merged_modules[dend$order]+1],
+                         'MergedModules' = merged_module_colors[merged_modules[dend$order]+1],
                          'TopModules' = top_module_colors[top_modules[dend$order]+1])
 
 dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(dissTOM))) %>% plot(ylim=c(min(dend$height),1))
 colored_bars(colors=dend_colors[,-1])
 
-rm(MEs, dend, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, top_module_colors, dend_colors)
+rm(MEs, dend, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, 
+   merged_module_colors, top_module_colors, dend_colors)
 ```
 <br><br>
 
@@ -319,25 +339,30 @@ clusterings[['comp_linkage_top_clusters']] = top_modules
 
 # Closest modules
 tree_cut = cutree(dend_MEs, h=0.16)
-for(i in unique(tree_cut)){
-  merged_modules = modules %>% replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), i)
+merged_modules = modules
+n=0
+for(i in sort(unique(tree_cut))){
+  n=n+1
+  merged_modules = merged_modules %>% 
+                   replace(modules %in% (gsub('Mod','', names(tree_cut[tree_cut==i])) %>% as.numeric), n)
 }
-
 clusterings[['comp_linkage_merged']] = merged_modules
 ```
 
 ```{r, fig.width=10}
+merged_module_colors = c('gray', viridis(length(unique(merged_modules))))
 top_module_colors = c('gray', viridis(max(top_modules)))
 
 dend_colors = data.frame('ID'=names(modules[labels(dend)]),
                          'OriginalModules' = module_colors[modules[dend$order]+1],
-                         'MergedModules' = module_colors[merged_modules[dend$order]+1],
+                         'MergedModules' = merged_module_colors[merged_modules[dend$order]+1],
                          'TopModules' = top_module_colors[top_modules[dend$order]+1])
 
 dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(dissTOM))) %>% plot(ylim=c(min(dend$height),1))
 colored_bars(colors=dend_colors[,-1])
 
-rm(MEs, dend, modules, module_colors, MEs_output, top_modules, merged_modules, top_module_colors, dend_colors)
+rm(MEs, dend, modules, module_colors, MEs_output, top_modules, merged_modules, tree_cut, 
+   merged_module_colors, top_module_colors, dend_colors)
 ```
 <br><br>
 
@@ -387,3 +412,60 @@ selectable_scatter_plot(plot_data[,-1,], plot_data[,-1])
 
 rm(pca, plot_data)
 ```
+<br><br>
+---
+
+### Conclusions
+
+- From the dendrograms, both clustering methods create well defined clusters
+
+- Average linkage leavesless genes unclassified
+
+- No method seems to have a strong relation with the first principal components
+
+- There doesn't seem to be a strong relation between clusterings
+
+- **Average linkage seems to work better**
+
+<br><br>
+
+---
+
+#### Save clusterings
+
+```{r save_clusterings}
+
+clusterings_file = './../../FirstYearReview/Data/Gandal/clusterings.csv'
+
+if(file.exists(clusterings_file)){
+
+  df = read.csv(clusterings_file, row.names=1)
+  
+  if(!all(rownames(df) == rownames(datExpr))) stop('Gene ordering does not match the one in clusterings.csv!')
+  
+  for(clustering in names(clusterings)){
+    df = df %>% mutate(!!clustering := sub(0, NA, clusterings[[clustering]]))
+    rownames(df) = rownames(datExpr)
+  }
+  
+} else {
+  
+  df = clusterings %>% unlist %>% matrix(nrow=length(clusterings), byrow=T) %>% t %>% data.frame %>% na_if(0)
+  colnames(df) = names(clusterings)
+  rownames(df) = rownames(datExpr)
+
+}
+
+write.csv(df, file=clusterings_file)
+
+rm(clusterings_file, df, clustering)
+```
+
+---
+
+#### Session info
+```{r}
+sessionInfo()
+```
+<br><br>
+

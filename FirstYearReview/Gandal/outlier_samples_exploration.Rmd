@@ -1,0 +1,203 @@
+---
+title: 'Outlier Control samples exploration'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/R_Markdowns')
+
+library(tidyverse) ; library(plotly) ; require(gridExtra) ; library(ggExtra)
+library(DESeq2) ; library(limma) ; library(edgeR)
+library(reshape2)
+
+create_plot = function(datExpr, title){
+  plot_data = data.frame('ID'=colnames(datExpr), 'Mean'=colMeans(datExpr), 'SD'=apply(datExpr,2,sd)) %>% 
+              mutate('ID'=substring(ID,2)) %>% left_join(datMeta, by=c('ID'='Dissected_Sample_ID')) %>%
+              dplyr::select('ID', 'Mean', 'SD', 'Diagnosis_')
+  
+  p_points = plot_data %>% ggplot(aes(Mean, SD, color=Diagnosis_)) + geom_point() + theme_minimal() + 
+             ggtitle(title) + theme(legend.position='bottom')
+  p = ggMarginal(p_points, groupFill=T, size=3)
+  
+  return(p)
+}
+```
+
+### Mean expression vs SD
+
+- Mean and standard deviation have a positive correlation in the samples
+
+- Autism samples seem to have a wider spread in mean expression than the control group
+
+- There's a group of Control samples that have a significantly higher mean expression than the rest. This data has already been filtered, and any outlier samples are supposed to have been filtered out already
+```{r load_data}
+load('./../Data/Gandal/filtered_raw_data.RData')
+
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+```
+
+```{r raw_data, warning=FALSE}
+datExpr %>% create_plot('Mean expression vs SD of raw data') %>% print
+```
+
+IDs of Control outliers based on their mean expression
+```{r, warning=FALSE, message=FALSE}
+ctl_mean_expr = data.frame('ID'=substring(colnames(datExpr),2), 'Mean'=colMeans(datExpr)) %>% 
+                left_join(datMeta, by=c('ID'='Dissected_Sample_ID')) %>%
+                filter(Diagnosis_=='CTL')
+
+ctl_outliers = ctl_mean_expr %>% filter(Mean>550)
+
+print(paste0('Outlier control samples: ', paste(ctl_outliers$ID, collapse = ', ')))
+```
+<br><br>
+
+### Exploring outlier control samples
+
+#### Mean expression vs sd of log transformed data
+
+- This transformation seems to move the outliers closer to the rest of the distribution
+
+- This stronger effect in the log transformation for the outliers than in the rest of the samples could mean that the reason why these group of samples are outliers is not because all of their genes have a higher gene expression, but because they have a group of genes with a really high expression which makes them specially sensitive to this transformation and pull the whole mean expression of the sample higher
+
+- The autism samples weren't affected as much by the log transformation, which could mean that they have consistently high expression in their genes
+
+- This transformation reduced the relation between Mean expression and SD
+
+```{r log2, warning=TRUE}
+log2(datExpr+1) %>% data.frame %>% create_plot('Mean expression vs SD of log2 transformed data') %>% print
+```
+<br>
+
+#### Median expression vs sd of raw data
+
+To test this hypothesis of the group of outliers that determine the mean expresion of the outlier control samples, calculating the Median of expression instead of the Mean because this second metric is more robust to outliers
+
+- We no longer have the separation into two groups of the control samples, so it seems like outlier genes was the reason behind this behaviour after all
+```{r median, warning=FALSE}
+median_expr_df = data.frame('ID'=colnames(datExpr), 'Median'=apply(datExpr,2,median), 'SD'=apply(datExpr,2,sd)) %>%
+               mutate('ID'=substring(ID,2)) %>% left_join(datMeta, by=c('ID'='Dissected_Sample_ID')) %>%
+               dplyr::select('ID', 'Median', 'SD', 'Diagnosis_')
+
+p_points = median_expr_df %>% ggplot(aes(Median, SD, color=Diagnosis_)) + geom_point() + theme_minimal() + 
+                            ggtitle('Median expression of raw data') + theme(legend.position='bottom')
+ggMarginal(p_points, groupFill=T, size=3)
+
+rm(median_expr_df)
+```
+<br>
+
+#### Percentile distribution of genes of the outlier samples
+
+For each of the outlier samples, the percentile of the expression level of each of its genes was calculated (with respect to the value for the same gene in all the other samples).
+
+```{r, fig.width=10, warning=FALSE, message=FALSE}
+
+quants = matrix(0, nrow=nrow(datExpr), ncol=nrow(ctl_outliers))
+
+for(gene in 1:nrow(datExpr)){
+  perc = datExpr %>% dplyr::slice(gene) %>% unlist(use.names=FALSE) %>% ecdf
+  for(sample in 1:nrow(ctl_outliers)){
+    quants[gene,sample] = perc(datExpr[gene, paste0('X',ctl_outliers$ID[sample])])
+  }
+}
+
+colnames(quants) = paste0('X',ctl_outliers$ID)
+quants = quants %>% data.frame
+```
+
+- Averaging the percentile of all outlier genes and calculating the percentile standard deviation we can see that for high values of mean percentile, the standard deviation is very small, which means that the outlier genes behind their behaviour could be shared between them
+
+- There is no clear separation of the outlier genes from the rest, so it's not easy to define a filtering threshold to remove them
+
+- Genes with Neuronal functional annotation in GO tend to have higher percentiles than non-neuronal genes
+
+```{r, fig.width=10, warning=FALSE}
+quants_comp = data.frame('ID'=rownames(datExpr), 'mean'=rowMeans(quants), 'sd'=apply(quants,1,sd)) %>%
+              left_join(datGenes, by=c('ID'='ensembl_gene_id')) %>% mutate('Gene'=external_gene_id) %>%
+              dplyr::select(ID, Gene, mean, sd, gene_biotype, chromosome_name) %>% 
+              left_join(GO_neuronal, by='ID') %>% mutate('Neuronal'=as.factor(ifelse(is.na(Neuronal),0,1))) %>%
+              mutate('alpha'=(as.numeric(Neuronal))/2)
+
+p = quants_comp %>% ggplot(aes(mean, sd, color=Neuronal)) + geom_point(aes(alpha=alpha)) + 
+    theme_minimal() + ggtitle('Average percentile for each gene in the outlier samples')
+ggMarginal(p, groupFill=T, alpha=0.5, size=5)
+```
+
+Selecting the genes with a mean > 0.95 and a standard deviation < 0.05, they don't seem to have a clear pattern in common
+```{r, fig.width=10}
+outlier_genes = quants_comp %>% filter(mean>=0.95 & sd<=0.05) %>% arrange(by=desc(mean)) %>%
+                dplyr::select(ID, Gene, gene_biotype, chromosome_name, Neuronal, mean, sd)
+  
+outlier_genes
+
+rm(p, outlier_genes)
+```
+
+#### Removing high percentile genes
+
+Removing genes with a high percentile from the expression dataset using different thresholds, it takes over 6K genes to remove the outlier behaviour, but this removal has changed the shape of the whole distribution, sliding all the distribution to the left and creating a new outlier peak, now on the left
+```{r, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=colnames(datExpr), 'Mean'=colMeans(datExpr), 'SD'=apply(datExpr,2,sd)) %>% 
+              mutate('ID'=substring(ID,2), 'Filter'=1) %>% left_join(datMeta, by=c('ID'='Dissected_Sample_ID')) %>%
+              dplyr::select('ID', 'Mean', 'SD', 'Diagnosis_', 'Filter')
+
+thresholds = c(0.95, 0.9, 0.85, 0.825, 0.8)
+
+for(p in thresholds){
+  datExpr_filtered = datExpr %>% filter(!rownames(datExpr) %in% quants_comp$ID[quants_comp$mean>p])
+  filtered = data.frame('ID'=colnames(datExpr_filtered), 'Mean'=colMeans(datExpr_filtered), 'SD'=apply(datExpr_filtered,2,sd)) %>% 
+              mutate('ID'=substring(ID,2), 'Filter'=p) %>% left_join(datMeta, by=c('ID'='Dissected_Sample_ID')) %>%
+              dplyr::select('ID', 'Mean', 'SD', 'Diagnosis_', 'Filter')
+  plot_data = rbind(plot_data, filtered)
+}
+
+plot_data %>% mutate('Filter' = factor(Filter, levels=c(1, thresholds))) %>% 
+              ggplot(aes(Mean, fill=Diagnosis_, color=Diagnosis_)) + geom_density(alpha=0.5) + theme_minimal() + 
+              theme(legend.position='none') + facet_grid(Filter~., scales='free_y')
+
+rm(thresholds, datExpr_filtered, filtered, plot_data, quants_comp)
+```
+<br>
+
+Using the Mann-Whitney test to detect genes with different behaviour in these outlier genes
+```{r, fig.width=10, fig.height=3}
+
+outlier_cols = colnames(datExpr) %in% paste0('X',ctl_outliers$ID)
+pvals = datExpr %>% apply(1, function(x) wilcox.test(x[outlier_cols], x[!outlier_cols])$p.value)
+
+signif_df = data.frame('ID'=rownames(datExpr), 'pval'=pvals, 'adj_pval'=p.adjust(pvals, method='BH')) %>%
+            mutate('signif'=adj_pval<0.05)
+
+signif_df %>% ggplot(aes(adj_pval, fill=signif)) + geom_histogram(bins=80, color='white') + 
+              geom_vline(xintercept=0.05, color='gray') + ggtitle('BH corrected p-values with a threshold of 0.5') + 
+              theme_minimal()
+
+print(paste0(sum(signif_df$signif), 
+      ' genes have a statistically significant difference in behaviour between the outlier samples and the rest'))
+```
+
+We end up selecting the same subgroup of genes as with the percentile approach. Which I think are too many and end up modifying the whole distribution
+```{r, warning=FALSE, message=FALSE, fig.width=10}
+
+quants_comp = data.frame('ID'=rownames(datExpr)[signif_df$signif], 
+                         'mean'=rowMeans(quants)[signif_df$signif], 'sd'=apply(quants,1,sd)[signif_df$signif]) %>%
+              left_join(datGenes, by=c('ID'='ensembl_gene_id')) %>% mutate('Gene'=external_gene_id) %>%
+              dplyr::select(ID, Gene, mean, sd, gene_biotype, chromosome_name) %>% left_join(GO_neuronal, by='ID') %>%
+              mutate('Neuronal' = as.factor(ifelse(is.na(Neuronal), 0, 1))) %>%
+              mutate('alpha'=(as.numeric(Neuronal)+0.5)/2)
+
+p = quants_comp %>% ggplot(aes(mean, sd, color=Neuronal)) + geom_point(aes(alpha=alpha)) + 
+    ggtitle('Average percentile position for each significant gene in the outlier samples') +
+    theme_minimal() + theme(legend.position='bottom')
+ggMarginal(p, groupFill=T, alpha=0.5, size=5)
+
+rm(quants_comp, p)
+```
+
