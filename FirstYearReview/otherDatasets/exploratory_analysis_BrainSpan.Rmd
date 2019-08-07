@@ -302,7 +302,7 @@ rm(plot_data, p1, p2)
 #### Save cleaned dataset
 ```{r save_preprocessed_dataset}
 save(datExpr, datMeta, datGenes, gene_info, file='./../Data/BrainSpan/cleaned_data.RData')
-#load('./../Data/Gupta/preprocessed_data.RData')
+#load('./../Data/BrainSpan/cleaned_data.RData')
 ```
 <br>
 

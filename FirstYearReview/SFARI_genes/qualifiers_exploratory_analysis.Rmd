@@ -1,0 +1,357 @@
+---
+title: 'MeSH Qualifiers Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/SFARI_genes')
+
+library(tidyverse) ; library(reshape2)
+library(jsonlite)
+library(viridisLite) ; library(viridis) ; library(plotly) ; library(gplots) ; library(RColorBrewer)
+library(Matrix)
+library(igraph) ; library(visNetwork)
+
+```
+<br><br>
+
+### Input
+
+- ./../Data/SFARI/SFARI_genes_01-15-2019.csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- SFARI_scraping_env/SFARI_scraping/genes/*gene_name*.csv file for each of the SFARI genes with the information of all the reports related to it obtained using the SFARI_scraper.py script and scrapy package.
+
+- ./../Data/SFARI/MeSH_terms_by_paper.json file with all the MeSH terms associated to each of the articles from the SFARI_scraper output files. Retrieved from the NCBI e-utils api using the get_articles_metadata.R script and reutils package. Downloaded on 24/05/19.
+
+#### Get list of articles and of MeSH terms
+```{r}
+# Read json with MeSH terms by paper
+mesh_terms_by_article_list = read_json('./../Data/SFARI/MeSH_terms_by_paper.json', simplifyVector=TRUE)
+```
+
+#### Preprocess MeSH terms
+
+- Retrieve subheaders/qualifiers by matching MeSH terms to a list of qualifiers. Differentiating MeSH terms from qualifiers with the same name by initial capital letter
+
+```{r extract_qualifiers_from_MeSH_terms}
+qualifiers = c('abnormalities', 'administration & dosage', 'adverse effects', 'analogs & derivatives', 'analysis', 
+               'anatomy & histology', 'antagonists & inhibitors', 'biosynthesis', 'blood supply', 'cerebrospinal fluid',
+               'chemical synthesis', 'chemically induced', 'classification', 'complications', 'congenital',
+               'cytology', 'deficiency', 'diagnosis', 'diagnostic imaging', 'diet therapy', 'drug effects', 'drug therapy',
+               'economics', 'education', 'embryology', 'enzymology', 'epidemiology', 'ethics', 'ethnology', 'etiology',
+               'growth & development', 'history', 'immunology', 'injuries', 'innervation', 'instrumentation',
+               'isolation & purification', 'legislation & jurisprudence', 'manpower', 'metabolism', 'methods', 'microbiology',
+               'mortality', 'nursing', 'organization & administration', 'parasitology', 'pathology', 'pharmacokinetics',
+               'pharmacology', 'physiology', 'physiopathology', 'poisoning', 'prevention & control', 'psychology',
+               'radiation effects', 'radiotherapy', 'rehabilitation', 'secondary', 'secretion', 'standards',
+               'statistics & numerical data', 'supply & distribution', 'surgery', 'therapeutic use', 'therapy', 'toxicity',
+               'transmission', 'trends', 'ultrastructure', 'urine', 'utilization', 'veterinary', 'virology')
+
+qualifiers_by_article_list = list()
+
+for(article in names(mesh_terms_by_article_list)){
+ 
+  mesh_terms = mesh_terms_by_article_list[[article]]
+  article_qualifiers = c()
+  
+  if(!is.na(mesh_terms[1])){
+    
+    for(mesh_term in mesh_terms){
+
+      # Look for qualifiers
+      match_general = sapply(qualifiers, grepl, mesh_term)
+      match_agonists = grepl('agonists', mesh_term) & !grepl('ntagonists', mesh_term)
+      match_blood = grepl('blood', mesh_term) & !grepl('blood supply', mesh_term)
+      match_chemistry = grepl('chemistry', mesh_term) & !grepl('immunohistochemistry', mesh_term)
+      match_genetics = grepl('genetics', mesh_term) & !grepl('Xgenetics', mesh_term)
+      
+      # Add matches to the qualifiers list
+      if(match_agonists) article_qualifiers = c(article_qualifiers, 'agonists')
+      if(match_blood) article_qualifiers = c(article_qualifiers, 'blood')
+      if(match_chemistry) article_qualifiers = c(article_qualifiers, 'chemistry')
+      if(match_genetics) article_qualifiers = c(article_qualifiers, 'genetics')
+      if(sum(match_general)>0) article_qualifiers = c(article_qualifiers, names(match_general)[match_general==TRUE])
+      
+    }
+  
+    # Update article entries
+    qualifiers_by_article_list[[article]] = unique(article_qualifiers)
+  }
+  else qualifiers_by_article_list[[article]] = NA
+  
+}
+
+rm(article, mesh_term, mesh_terms, match_general, match_agonists, match_chemistry,
+   match_blood, match_genetics, article_qualifiers, mesh_terms_by_article_list)
+```
+
+```{r}
+# List of all mesh terms
+all_qualifiers = sort(c(qualifiers, 'agonists', 'blood', 'chemistry', 'genetics'))
+
+print(paste0('Articles: ', length(qualifiers_by_article_list), '       Qualifiers: ', length(all_qualifiers)))
+
+rm(qualifiers)
+```
+
+#### Create article-qualifier matrix
+```{r create_article_qualifier_mat}
+
+all_articles = names(qualifiers_by_article_list)
+
+article_qualifier_mat = data.frame(matrix(0, nrow=length(all_articles), ncol=sum(!is.na(all_qualifiers))))
+rownames(article_qualifier_mat) = all_articles
+colnames(article_qualifier_mat) = all_qualifiers[!is.na(all_qualifiers)]
+
+for(article in all_articles){
+  article_qualifiers = qualifiers_by_article_list[[article]]
+  if(sum(is.na(article_qualifiers))==0){
+    article_qualifier_mat[article, article_qualifiers] = 1
+  }
+}
+
+rm(qualifiers_by_article_list, article, article_qualifiers)
+```
+
+An important proportion of articles (almost 10%) don't have qualifiers
+```{r}
+qualifiers_by_article = data.frame('id' = rownames(article_qualifier_mat), 'n_qualifiers' = rowSums(article_qualifier_mat))
+
+bins = max(qualifiers_by_article$n_qualifiers)-min(qualifiers_by_article$n_qualifiers)+1
+ggplotly(qualifiers_by_article %>% ggplot(aes(n_qualifiers)) + geom_histogram(bins=bins, alpha=0.6) + 
+              ggtitle('Distribution of number of qualifiers by article') + theme_minimal())
+
+rm(bins)
+```
+
+A few qualifiers are in no article or just a few, but there are some qualifiers present in most of the articles
+```{r, warning=FALSE, fig.width=10}
+articles_by_qualifier = data.frame('id' = as.character(colnames(article_qualifier_mat)),
+                                   'n_articles' = colSums(article_qualifier_mat), stringsAsFactors = FALSE)
+
+bins = max(articles_by_qualifier$n_articles)-min(articles_by_qualifier$n_articles)+1
+ggplotly(articles_by_qualifier %>% ggplot(aes(n_articles)) + geom_histogram(bins=bins, alpha=0.6) + 
+         scale_x_sqrt() + scale_y_sqrt() + theme_minimal() +
+         ggtitle('Distribution of number of articles that contain each qualifier'))
+
+rm(bins)
+```
+
+Many of the most popular qualifiers aren't useful
+```{r, fig.width=10, fig.height=10}
+top_n_counts = 50
+top_qualifiers = articles_by_qualifier %>% top_n(top_n_counts, wt=n_articles)
+
+ggplotly(top_qualifiers %>% ggplot(aes(reorder(id, n_articles), n_articles, fill=n_articles)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top ', top_n_counts, ' qualifiers')) + 
+         xlab('') + ylab('No. Articles') + theme_minimal() + theme(legend.position='none'))
+
+
+rm(qualifiers_by_article, top_n_counts)
+```
+
+#### Filters:
+
+- Articles that have no qualifiers
+
+```{r filter_articles_without_qualifiers}
+keep_articles = rowSums(article_qualifier_mat)>0
+print(paste0(sum(!keep_articles), '/', nrow(article_qualifier_mat), ' articles have no qualifiers'))
+```
+<br>
+
+- Qualifiers present in less than two articles
+
+```{r filter_infrequent_qualifiers}
+keep_qualifiers = colSums(article_qualifier_mat)>1
+print(paste0(sum(!keep_qualifiers), '/', ncol(article_qualifier_mat), ' qualifiers are mentioned in less than two articles'))
+
+article_qualifier_mat = article_qualifier_mat[keep_articles, keep_qualifiers]
+articles_by_qualifier = articles_by_qualifier %>% filter(id %in% colnames(article_qualifier_mat))
+
+print(paste0('Remaining Articles: ', nrow(article_qualifier_mat), '       Qualifiers: ', ncol(article_qualifier_mat)))
+
+rm(keep_articles, keep_qualifiers)
+```
+<br>
+
+### Network:
+
+#### Qualifier Network
+```{r create_qualifier_network}
+sparse_article_qualifier_mat = Matrix(as.matrix(article_qualifier_mat), sparse=TRUE)
+
+# EDGES
+qualifier_qualifier_mat = t(sparse_article_qualifier_mat) %*% sparse_article_qualifier_mat
+
+edges = summary(qualifier_qualifier_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>%
+        mutate(from = colnames(article_qualifier_mat)[from],
+               to = colnames(article_qualifier_mat)[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction
+article_qualifier_colsums = colSums(article_qualifier_mat)
+names(article_qualifier_colsums) = colnames(article_qualifier_mat)
+edges = edges %>% mutate('weight'=count/(article_qualifier_colsums[from]+article_qualifier_colsums[to]))
+
+# NODES
+nodes = articles_by_qualifier %>% mutate('id'=as.character(id), 'title'=as.character(id), 'value'=n_articles)
+
+print(paste0('Nodes: ', nrow(nodes), '        Edges: ', nrow(edges)/2))
+```
+
+```{r create_qualifier_graph, fig.width=10, fig.height=10}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+
+plot_data = data.frame('id'=graph %>% get.vertex.attribute('name'), 'eigencentrality'=eigencentr) %>%
+            top_n(50, wt=eigencentrality)
+ggplotly(plot_data %>% ggplot(aes(reorder(id, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Qualifiers with the highest Network centrality')) + 
+         xlab('') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+
+rm(plot_data)
+```
+
+#### Clustering
+```{r clustering, fig.width=10}
+
+comms_louvain = cluster_louvain(graph)
+modules = comms_louvain %>% membership
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr) %>%
+                  set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.sizes, size=Freq)
+ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
+         ggtitle('Number of Qualifiers in each Module') + theme_minimal() + theme(legend.position = 'none'))
+
+visIgraph(graph) %>% visOptions(selectedBy='module', highlightNearest=TRUE) %>% 
+                     visIgraphLayout(randomSeed=123)
+
+
+rm(color_pal, eigen_centrality_output, eigencentr, comm_sizes, edges, nodes)
+```
+
+Most important qualifiers for each module
+```{r get_top_qualifiers_per_module, fig.width=10}
+
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  # Plot eigencentrality of top 10 MeSH terms
+  plot_data = data.frame('qualifier'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+              top_n(10, wt=eigencentrality)
+  print(plot_data %>% ggplot(aes(reorder(qualifier, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+       geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+       ggtitle(paste0('Top terms for Module ', i)) + 
+       xlab('Qualifiers') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data, comms_louvain)
+```
+
+#### Module Network
+
+- Collapsing edges: sum all original weights and divide by the product of the number of elements in both (the number of possible interactions they could have)
+
+- The Network plot is not that informative
+
+```{r module_network}
+
+module_graph = contract(graph, graph %>% get.vertex.attribute('module'), vertex.attr.comb='first') %>%
+               simplify(edge.attr.comb='sum') %>% set_vertex_attr('name', value=module_info$module) %>%
+                                                  set_vertex_attr('title', value=module_info$top_term) %>%
+                                                  set_vertex_attr('module_size', value=module_info$size) %>%
+                                                  set_vertex_attr('value', value=module_info$size)
+
+nodes_module_graph  = module_graph %>% as_data_frame(what='vertices') %>% mutate('id'=name)
+edges_module_graph = module_graph %>% as_data_frame() %>% 
+                     mutate('corrected_weight' = weight/(nodes_module_graph$module_size[as.numeric(from)]*
+                                                 nodes_module_graph$module_size[as.numeric(to)])*100)
+
+module_graph = module_graph %>% set_edge_attr('weight', value=edges_module_graph$corrected_weight)
+
+visIgraph(module_graph) %>% visIgraphLayout(randomSeed=123) %>% visOptions(highlightNearest=TRUE)
+
+rm(module_info, nodes_module_graph, edges_module_graph)
+```
+
+```{r hetmap_of module_similarity, fig.width=10}
+adj_mat = module_graph %>% as_adjacency_matrix(attr='weight') %>% as.matrix
+adj_mat = adj_mat
+
+heatmap.2(adj_mat, cellnote=round(adj_mat,2), dendrogram='none', notecol='gray', scale='none', trace='none',
+          key=FALSE, xlab='Modules', ylab='Modules', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+
+rm(adj_mat)
+```
+
+Save file with the modules each paper belongs to through its qualifiers
+```{r save_file}
+
+qualifier_module = graph %>% as_data_frame(what='vertices') %>% dplyr::select(name, module)
+
+qualifier_module_mat = matrix(0, nrow(qualifier_module), max(qualifier_module$module))
+rownames(qualifier_module_mat) = qualifier_module$name
+colnames(qualifier_module_mat) = sort(unique(qualifier_module$module))
+
+for(i in seq(1, nrow(qualifier_module))){
+  qualifier_module_mat[i,qualifier_module[i,2]] = 1
+}
+
+if(!all(colnames(article_qualifier_mat) == rownames(qualifier_module_mat))){
+  print('Row and column order dont match!')
+}
+
+article_module_mat = as.matrix(article_qualifier_mat) %*% qualifier_module_mat
+rownames(article_module_mat) = rownames(article_qualifier_mat)
+
+write.csv(article_module_mat, file='./../Data/SFARI/article_module_matrix_qualifiers.csv')
+
+print('Distribution of number of modules per article')
+table(apply(article_module_mat, 1, function(x) sum(x>0)))
+```
+
+```{r plot_module_network, fig.height=8, fig.width=10}
+
+melt_article_module = melt(article_module_mat)
+colnames(melt_article_module) = c('articleID', 'module', 'value')
+melt_article_module$module = as.factor(melt_article_module$module)
+
+ggplotly(melt_article_module %>% ggplot(aes(value, fill=module, color=module)) +
+         geom_histogram(position='identity', bins=max(melt_article_module$value), alpha=0.5) + 
+         facet_grid(module~., scales='free_y') + ggtitle('Module content distribution per article') + 
+         xlab('n_articles') + ylab('Module content') + theme_minimal() + theme(legend.position='none'))
+
+rm(qualifier_module, qualifier_module_mat, i)
+```

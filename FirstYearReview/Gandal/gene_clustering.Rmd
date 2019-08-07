@@ -169,7 +169,7 @@ Samples are grouped into two big clusters, and then many outliers.
 # cc_output = datExpr_redDim %>% as.matrix %>% t %>% ConsensusClusterPlus(maxK=20, reps=5, seed=123,
 #                                                    title='./../Data/Gandal/consensusClustering/genes_DE/l1', plot='png')
 # save(cc_output, file='./../Data/Gandal/consensusClustering/genes_DE/l1/cc_output.RData')
-load('./../Data/Gandal/consensusClustering/genes_DE/l1/cc_output.RData')
+load('./../Data/Gandal/consensusClustering/genes/l1/cc_output.RData')
 best_k = 3 # 2 clusters and outliers
 clusterings[['cc_l1']] = cc_output[[best_k]]$consensusClass
 
@@ -190,7 +190,7 @@ clusterings[['cc_l1']] = cc_output[[best_k]]$consensusClass
 ```
 
 ```{r, echo=FALSE, out.width = '50%'}
-knitr::include_graphics('./../Data/Gandal/consensusClustering/genes_DE/l1/consensus003.png')
+knitr::include_graphics('./../Data/Gandal/consensusClustering/genes/l1/consensus003.png')
 ```
 <br>
 *The rest of the output plots can be found in the Data/Gandal/consensusClustering/genes_DE/ folder

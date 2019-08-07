@@ -1,0 +1,455 @@
+---
+title: 'Gene-Mesh Terms Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/gene_network/R_markdowns')
+
+library(tidyverse) ; library(reshape2)
+library(jsonlite)
+library(viridisLite) ; library(viridis) ; library(plotly) ; library(gplots) ; library(RColorBrewer)
+library(Matrix)
+library(igraph) ; library(visNetwork)
+
+SFARI_colour_hue = function() pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3')
+```
+<br><br>
+
+### Input
+
+- ./../Data/SFARI/SFARI_genes_01-15-2019.csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- SFARI_scraping_env/SFARI_scraping/genes/*gene_name*.csv file for each of the SFARI genes with the information of all the reports related to it obtained using the SFARI_scraper.py script and scrapy package.
+
+- ./../Data/SFARI/MeSH_terms_by_paper.json file with all the MeSH terms associated to each of the articles from the SFARI_scraper output files. Retrieved from the NCBI e-utils api using the get_articles_metadata.R script and reutils package. Downloaded on 24/05/19.
+
+<br><br><br>
+
+### Preprocessing
+
+#### Create gene-article matrix
+```{r}
+
+### GET LIST OF GENES
+list_gene_files = list.files('./SFARI_scraping_env/SFARI_scraping/genes/')
+
+
+# GET LIST OF PUBMED IDS
+get_pubmed_IDs = function(){
+  all_pubmed_ids = c()
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./SFARI_scraping_env/SFARI_scraping/genes/', gene_file))
+    pubmed_ids = unique(file$pubmed.ID)
+    all_pubmed_ids = unique(c(all_pubmed_ids, pubmed_ids)) 
+  }
+  all_pubmed_ids = as.character(all_pubmed_ids)
+  return(all_pubmed_ids)
+}
+
+all_pubmed_ids = get_pubmed_IDs()
+
+
+# CREATE GENE-ARTICLE (SPARSE) MATRIX
+SFARI_genes_info = read.csv('./..//Data/SFARI/SFARI_genes_01-15-2019.csv') %>% mutate('ID'=gene.symbol)
+
+create_gene_pmID_mat = function(){
+  
+  # Create empty dataframe
+  gene_pmID_mat = data.frame(matrix(0, nrow=length(list_gene_files), ncol=length(all_pubmed_ids)))
+  rownames(gene_pmID_mat) = sapply(list_gene_files, function(x) gsub('.csv', '', x))
+  colnames(gene_pmID_mat) = all_pubmed_ids
+  
+  # Fillout dataframe
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./SFARI_scraping_env/SFARI_scraping/genes/', gene_file))
+    pubmed_ids = as.character(unique(file$pubmed.ID))
+    gene_pmID_mat[gsub('.csv', '', gene_file), pubmed_ids] = 1 
+  }
+  
+  sparse_gene_pmID_mat = Matrix(as.matrix(gene_pmID_mat), sparse=TRUE)
+  return(sparse_gene_pmID_mat)
+}
+
+gene_pmID_mat = create_gene_pmID_mat()
+
+print(paste0('Genes: ', nrow(gene_pmID_mat), '     Articles: ', ncol(gene_pmID_mat)))
+
+rm(list_gene_files)
+```
+
+#### Create article-MeSH term matrix
+
+```{r}
+
+# LOAD AND PREPROCESS MESH TERMS
+preprocess_MeSH_terms = function(mesh_terms_by_article){
+  qualifiers = c('abnormalities', 'administration & dosage', 'adverse effects', 'analogs & derivatives', 'analysis', 
+                 'anatomy & histology', 'antagonists & inhibitors', 'biosynthesis', 'blood supply', 'cerebrospinal fluid',
+                 'chemical synthesis', 'chemically induced', 'classification', 'complications', 'congenital',
+                 'cytology', 'deficiency', 'diagnosis', 'diagnostic imaging', 'diet therapy', 'drug effects', 'drug therapy',
+                 'economics', 'education', 'embryology', 'enzymology', 'epidemiology', 'ethics', 'ethnology', 'etiology',
+                 'growth & development', 'history', 'immunology', 'injuries', 'innervation', 'instrumentation',
+                 'isolation & purification', 'legislation & jurisprudence', 'manpower', 'metabolism', 'methods', 'microbiology',
+                 'mortality', 'nursing', 'organization & administration', 'parasitology', 'pathology', 'pharmacokinetics',
+                 'pharmacology', 'physiology', 'physiopathology', 'poisoning', 'prevention & control', 'psychology',
+                 'radiation effects', 'radiotherapy', 'rehabilitation', 'secondary', 'secretion', 'standards',
+                 'statistics & numerical data', 'supply & distribution', 'surgery', 'therapeutic use', 'therapy', 'toxicity',
+                 'transmission', 'trends', 'ultrastructure', 'urine', 'utilization', 'veterinary', 'virology')
+  qualifiers_all = c(qualifiers, 'agonists', 'blood', 'chemistry', 'genetics')
+  qualifiers_regex = paste(qualifiers, collapse='|')
+  
+  keep_terms = c('abnormalit', 'acid', 'aging', 'allele', 'amin', 'analgesic', 'analysis', 'ancestry', 'astrocyte',
+               'axon', 'behaviour', 'binding', 'biomark', 'blot', 'brain', 'case-control', 'cell', 'cereb', 
+               'channel', 'chemistry', 'chromatin', 'chromosome', 'circadian', 'clon', 'cluster', 'codon', 
+               'cognit', 'cohort', 'consanguinity', 'cortex', 'cpg', 'culture', 'dendrit', 'develop',
+               'disease', 'disorder', 'dna', 'dopamin', 'drug', 'electro', 'enzym', 'epilepsy', 'etiology',
+               'exome', 'exon', 'fibroblast', 'fluorescence', 'gabapentin', 'gen', 'haplo', 'heart', 'hippocamp', 
+               'histon', 'hypothalamus', 'imaging', 'immun', 'in situ', 'in vitro', 'intron', 'kinase', 'knockout', 
+               'link', 'megalencephaly', 'membran', 'mental', 'messenger', 'metabo', 'methyl', 'microcephaly',
+               'microscop', 'microtubules', 'missense', 'model', 'molecul', 'muta', 'neuro', 'nonsense', 'nucleotide',
+               'oxytocin', 'pair', 'pathway', 'peptid', 'pervasive', 'phenotype', 'phospor', 'polymerase', 
+               'polymorphism', 'promoter', 'protein', 'psychiatric', 'receptor', 'recessive', 'region', 'regulat',
+               'risk', 'rna', 'seizure', 'sequence', 'serotonin', 'sibling', 'signal', 'spectrometry',
+               'splicing', 'statistics', 'striatum', 'synap', 'technique', 'trait loci', 'transcript',
+               'transfection', 'transloc', 'tumor', 'vasopressin', 'zygote')
+  keep_terms_regex = paste(keep_terms, collapse='|')
+  
+  for(article in names(mesh_terms_by_article)){
+   
+    mesh_terms = mesh_terms_by_article[[article]]
+    new_mesh_terms = c()
+    
+    if(!is.na(mesh_terms[1])){
+      
+      for(mesh_term in mesh_terms){
+  
+        # Find and delete qualifiers
+        match_general = grepl(qualifiers_regex, mesh_term)
+        match_agonists = grepl('agonists', mesh_term) & !grepl('ntagonists', mesh_term)
+        match_blood = grepl('blood', mesh_term) & !grepl('blood supply', mesh_term)
+        match_chemistry = grepl('chemistry', mesh_term) & !grepl('immunohistochemistry', mesh_term)
+        match_genetics = grepl('genetics', mesh_term) & !grepl('Xgenetics', mesh_term)
+        
+        if(match_agonists) mesh_term = gsub('agonists', '', mesh_term)
+        if(match_blood) mesh_term = gsub('blood', '', mesh_term)
+        if(match_chemistry) mesh_term = gsub('chemistry', '', mesh_term)
+        if(match_genetics) mesh_term = gsub('genetics', '', mesh_term)
+        if(match_general) mesh_term = gsub(qualifiers_regex, '', mesh_term)
+        
+        # Separate MeSH terms by commas and update list
+        mesh_term = mesh_term %>% strsplit(', ') %>% unlist
+        new_mesh_terms = c(new_mesh_terms, mesh_term[grepl(keep_terms_regex, tolower(mesh_term))])
+      }
+    
+      # Update article entries
+      mesh_terms_by_article[[article]] = unique(new_mesh_terms)
+    }
+  }  
+  return(mesh_terms_by_article)
+}
+
+create_article_MeSH_term_mat = function(mesh_terms_by_article_list){
+  
+  # GET LIST OF ARTICLES
+  all_articles = names(mesh_terms_by_article_list)
+  
+  # GET LIST OF MESH TERMS
+  all_mesh_terms = c()
+  for(mts in mesh_terms_by_article_list) all_mesh_terms = unique(c(all_mesh_terms, mts))
+  
+  # CREATE ARTICLE-MESH TERM MATRIX
+  article_mesh_term_mat = data.frame(matrix(0, nrow=length(all_articles), ncol=sum(!is.na(all_mesh_terms))))
+  rownames(article_mesh_term_mat) = all_articles
+  colnames(article_mesh_term_mat) = all_mesh_terms[!is.na(all_mesh_terms)]
+  
+  for(article in all_articles){
+    article_mesh_terms = mesh_terms_by_article_list[[article]]
+    if(sum(is.na(article_mesh_terms))==0){
+      article_mesh_term_mat[article, article_mesh_terms]=1
+    }
+  } 
+  
+  article_mesh_term_mat = Matrix(as.matrix(article_mesh_term_mat), sparse=TRUE)
+  
+  return(article_mesh_term_mat)
+}
+
+mesh_terms_by_article_list = read_json('./../Data/SFARI/MeSH_terms_by_paper.json', simplifyVector=TRUE)
+mesh_terms_by_article_list = preprocess_MeSH_terms(mesh_terms_by_article_list)
+article_mesh_term_mat = create_article_MeSH_term_mat(mesh_terms_by_article_list)
+
+print(paste0('Articles: ', nrow(article_mesh_term_mat), '     MeSH Terms: ', ncol(article_mesh_term_mat)))
+```
+
+#### Create gene-MeSH term matrix
+```{r}
+# Keep articles present in both matrices
+gene_pmID_mat = gene_pmID_mat[,colnames(gene_pmID_mat) %in% rownames(article_mesh_term_mat)]
+article_mesh_term_mat = article_mesh_term_mat[rownames(article_mesh_term_mat) %in% colnames(gene_pmID_mat),]
+
+# Check that ordering is the same in both matrices
+if(!all(colnames(gene_pmID_mat) == rownames(article_mesh_term_mat))){
+  print("Article ordering doesn't match")
+}
+
+gene_mesh_mat = gene_pmID_mat %*% article_mesh_term_mat
+
+print(paste0('Genes: ', nrow(gene_mesh_mat), '     MeSH Terms: ', ncol(gene_mesh_mat)))
+```
+
+#### Remove genes without any associated MeSH term
+```{r}
+to_keep = rowSums(gene_mesh_mat)>0
+print(paste0('Removing ', sum(!to_keep), ' genes'))
+```
+
+SFARI score distribution of removed genes:
+```{r}
+SFARI_genes_info$gene.score[!SFARI_genes_info$ID %in% rownames(gene_mesh_mat)[to_keep]] %>% table(useNA='ifany')
+```
+
+```{r}
+# Remove genes
+gene_mesh_mat = gene_mesh_mat[to_keep,]
+rm(to_keep)
+```
+
+### Analysis
+
+A lot of MeSH terms are related to a single gene (~30%)
+```{r, fig.width=10}
+genes_by_mesh_term = data.frame('ID'=colnames(gene_mesh_mat), 'n_genes'=colSums(gene_mesh_mat))
+
+ggplotly(genes_by_mesh_term %>% ggplot(aes(n_genes)) + ggtitle('Distribution of No. genes related to each MeSH term') + 
+         geom_histogram(position='identity', bins=max(genes_by_mesh_term$n_genes), alpha=0.5) + scale_y_sqrt() +
+         xlab('No. Genes') + ylab('No. MeSH Terms') + theme_minimal() + theme(legend.position = 'none'))
+```
+
+The higher the SFARI score, the bigger the amount of MeSH terms it contains (makes sense because there was a relation between SFARI score and number of publications). The same relation exists between syndromic and non-syndromic genes.
+```{r, warning=FALSE, fig.width=10}
+mesh_terms_by_gene = data.frame('ID'=rownames(gene_mesh_mat), 'n_MeSH_terms'=rowSums(gene_mesh_mat)) %>% 
+                     left_join(SFARI_genes_info, by='ID') %>% dplyr::select(ID, n_MeSH_terms, gene.score, syndromic) %>%
+                     mutate(gene.score = as.factor(ifelse(is.na(gene.score),'None',gene.score)),
+                            syndromic=as.factor(as.logical(syndromic)))
+
+p1 = ggplotly(mesh_terms_by_gene %>% ggplot(aes(gene.score, n_MeSH_terms, fill=gene.score)) + geom_boxplot() + 
+         xlab('Gene Score') + ylab('No. MeSH Terms') + theme_minimal() + theme(legend.position='none') +
+         scale_fill_manual(values=SFARI_colour_hue()) + scale_color_manual(values=SFARI_colour_hue()))
+
+p2 = ggplotly(mesh_terms_by_gene %>% ggplot(aes(syndromic, n_MeSH_terms, fill=syndromic)) + geom_boxplot() + 
+         ggtitle('MeSH terms related to each gene by score (left) and syndromic tag (right)') + 
+         xlab('Syndromic') + ylab('No. MeSH Terms') + theme_minimal() + theme(legend.position='none'))
+
+subplot(p1, p2, nrows=1, widths=c(0.7,0.3))
+
+rm(p1, p2)
+```
+
+Since scores 5 and 6 have no syndromic genes, this tag can be a confounder, but even when separating the genes both by score and syndromic tag, the relation persists
+```{r, fig.width=10}
+ggplotly(mesh_terms_by_gene %>% ggplot(aes(gene.score, n_MeSH_terms, fill=gene.score)) + geom_boxplot() + 
+         ggtitle('MeSH terms related to each gene by score and syndromic tag') + 
+         xlab('Gene Score') + ylab('No. MeSH Terms') + facet_wrap(~syndromic) +    
+         scale_fill_manual(values=SFARI_colour_hue()) + scale_color_manual(values=SFARI_colour_hue()) +
+         theme_minimal() + theme(legend.position='none'))
+```
+
+### Gene Network Analysis
+
+#### Create Network
+
+On average, each node is connected to half of the nodes -> strongly connected Network
+```{r}
+# EDGES
+gene_gene_mat = gene_mesh_mat %*% t(gene_mesh_mat)
+gene_names = rownames(gene_mesh_mat)
+
+edges = summary(gene_gene_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>% 
+        mutate(from = gene_names[from], to = gene_names[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction (multiplying by 100 to make the numbers bigger)
+gene_mesh_mat_rowsums = rowSums(gene_mesh_mat)
+names(gene_mesh_mat_rowsums) = rownames(gene_gene_mat)
+edges = edges %>% mutate('weight'=count/(gene_mesh_mat_rowsums[from]+gene_mesh_mat_rowsums[to]))
+
+# NODES
+nodes = SFARI_genes_info %>% dplyr::select(gene.symbol, gene.score, syndromic, number.of.reports) %>% 
+        mutate(id = gene.symbol, title=gene.symbol, value=number.of.reports,
+               shape=ifelse(syndromic==0, 'circle','square'),
+               color_score=case_when(gene.score==1~'#FF7631', gene.score==2~'#FFB100',
+                                     gene.score==3~'#E8E328', gene.score==4~'#8CC83F',
+                                     gene.score==5~'#62CCA6', gene.score==6~'#59B9C9',
+                                     is.na(gene.score) ~ '#b3b3b3')) %>%
+        mutate('color'=color_score) %>% filter(!duplicated(id)) %>% 
+        filter(gene.symbol %in% unique(c(edges$from, edges$to)))
+
+# Details:
+print(paste0('Nodes: ', nrow(nodes),'        Edges: ', nrow(edges)/2))
+```
+
+#### Calculate eigencentrality by Gene Score
+
+The higher the SFARI score, the higher the eigencentrality of the genes in the Network. Same with syndromic tag
+```{r, fig.width=10}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr)
+
+plot_data = data.frame('gene.score'= as.factor(vertex_attr(graph, 'gene.score')),
+                       'Syndromic'= as.logical(vertex_attr(graph, 'syndromic')),
+                       'Eigencentrality'= vertex_attr(graph, 'eigencentrality')) %>%
+                       mutate('gene.score'=ifelse(is.na(gene.score), 'None', gene.score))
+
+correlation_scr = cor(nodes$gene.score[!is.na(nodes$gene.score)], eigencentr[!is.na(nodes$gene.score)])
+correlation_syn = cor(as.numeric(plot_data$Syndromic), plot_data$Eigencentrality)
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, Eigencentrality, fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + theme(legend.position='none'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(Syndromic, Eigencentrality, fill=Syndromic)) + geom_boxplot() + 
+     theme_minimal() + theme(legend.position='none') + 
+     ggtitle(paste0('Correlation = ', round(correlation_scr, 2), ' (left) and ', round(correlation_syn,2), ' (right)')))
+
+subplot(p1, p2, nrows=1, widths=c(0.7, 0.3))
+
+rm(correlation_scr, correlation_syn, p1, p2)
+```
+
+When separating the SFARI scores by syndromic tag, the relation between eigencentrality and score persists
+```{r, fig.width=10}
+corr_non_syn = cor(nodes$gene.score[!is.na(nodes$gene.score) & nodes$syndromic==0], 
+                   eigencentr[!is.na(nodes$gene.score) & nodes$syndromic==0])
+corr_syn = cor(nodes$gene.score[!is.na(nodes$gene.score) & nodes$syndromic==1], 
+               eigencentr[!is.na(nodes$gene.score) & nodes$syndromic==1])
+ggplotly(plot_data %>% ggplot(aes(gene.score, Eigencentrality, fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + theme(legend.position='none') +
+         facet_wrap( ~ Syndromic, ncol=2) + ggtitle(paste0('Correlation = ', round(corr_non_syn, 4),
+                                                           ' (left) and ', round(corr_syn, 4), ' (right)')))
+
+rm(plot_data, corr_non_syn, corr_syn, nodes, edges)
+```
+
+```{r}
+plot_data = data.frame('id'=graph %>% get.vertex.attribute('name'), 'eigencentrality'=eigencentr) %>%
+            top_n(25, wt=eigencentrality)
+ggplotly(plot_data %>% ggplot(aes(reorder(id, eigencentrality), eigencentrality, fill=eigencentrality)) + 
+         geom_bar(stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+         ggtitle(paste0('Top 25 genes with the highest Network centrality')) + 
+         xlab('') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+
+rm(plot_data)
+```
+
+**Note:** Network is too densely connected to plot (too heavy and not very informative)
+
+#### Community detection:
+
+```{r, warning=FALSE, error=FALSE}
+
+comms_louvain = cluster_louvain(graph)
+modules = comms_louvain %>% membership
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.sizes, size=Freq)
+ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
+         ggtitle('Number of genes in each module') + theme_minimal() + theme(legend.position = 'none'))
+
+hm_data = table(vertex_attr(graph, 'gene.score'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
+          as.data.frame.matrix %>% as.matrix
+rownames(hm_data) = c('S1','S2','S3','S4','S5','S6','None')
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[8:25])
+
+hm_data = table(vertex_attr(graph, 'syndromic'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
+          as.data.frame.matrix %>% as.matrix
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
+```
+
+Separating by syndromic tag the SFARI scores
+```{r, warning=FALSE}
+hm_data = data.frame('syndromic_gene.score'=paste(vertex_attr(graph, 'syndromic'), '_',vertex_attr(graph, 'gene.score')),
+                     'module'=vertex_attr(graph, 'module'))
+hm_data = table(hm_data$syndromic_gene.score, hm_data$module) %>% as.data.frame.matrix %>% as.matrix
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+
+rm(color_pal)
+```
+#### Module characterisation
+
+Most important genes for each module coloured by SFARI score
+```{r, warning=FALSE}
+
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  # Plot eigencentrality of top 10 genes
+  plot_data = data.frame('gene'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+              top_n(10, wt=eigencentrality) %>% left_join(SFARI_genes_info, by=c('gene'='ID'))
+  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+       geom_bar(stat='identity') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') + coord_flip() + 
+       ggtitle(paste0('Top genes for Module ', i)) + xlab('Genes') + ylab('Eigencentrality') + 
+       theme_minimal() + theme(legend.position='none'))
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data)
+```
+
+Most important MeSH terms for each module
+```{r, fig.height=6}
+for(i in names(sizes(comms_louvain))){
+  
+  module_genes = names(modules)[modules==i]
+  
+  # Filter genes belonging to module and column with non-zero values
+  module_gene_mesh_mat = gene_mesh_mat[rownames(gene_mesh_mat) %in% module_genes,]
+  module_gene_mesh_mat = module_gene_mesh_mat[,colSums(module_gene_mesh_mat)>0]
+  
+  # Do PCA and extract 1st PC
+  pca_module = prcomp(module_gene_mesh_mat, scale.=TRUE)
+  module_eigengene = pca_module$rotation[,'PC1']
+  names(module_eigengene) = colnames(module_gene_mesh_mat)
+  
+  # Plot module's most relevant MeSH terms
+  plot_data = data.frame('mesh_term'=names(module_eigengene), 'eigencentrality'=module_eigengene) %>%
+              top_n(25, wt=abs(eigencentrality))
+  print(plot_data %>% ggplot(aes(reorder(mesh_term, abs(eigencentrality)), eigencentrality, fill=eigencentrality)) + 
+       geom_bar(position='identity', stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+       ggtitle(paste0('Top MeSH terms for Module ', i)) + 
+       xlab('MeSH Terms') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+  
+}
+
+rm(i, module_genes, module_gene_mesh_mat, pca_module, module_eigengene, plot_data)
+```

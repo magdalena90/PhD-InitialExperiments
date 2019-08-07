@@ -320,6 +320,7 @@ rm(plot_data, p1, p2)
 #### Save preprocessed dataset
 ```{r save_preprocessed_dataset}
 save(datExpr, datMeta, datGenes, file='./../Data/Liu/preprocessed_data.RData')
+#load('./../Data/Liu/preprocessed_data.RData')
 ```
 <br>
 

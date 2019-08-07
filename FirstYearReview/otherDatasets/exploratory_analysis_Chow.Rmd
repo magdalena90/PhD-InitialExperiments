@@ -320,7 +320,7 @@ ggplotly(DE_info %>% ggplot(aes(x=gene.score, y=abs(logFC), fill=gene.score)) +
 #### Save preprocessed dataset
 ```{r save_preprocessed_dataset}
 save(datExpr, datMeta, datGenes, DE_info, file='./../Data/Chow/cleaned_data.RData')
-#load('./../Data/Gupta/preprocessed_data.RData')
+#load('./../Data/Chow/cleaned_data.RData')
 ```
 <br>
 

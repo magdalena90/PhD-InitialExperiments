@@ -1,0 +1,368 @@
+---
+title: 'Gene-Year of Publication Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/gene_network/R_markdowns')
+
+library(tidyverse) ; library(reshape2)
+library(jsonlite)
+library(viridisLite) ; library(viridis) ; library(plotly) ; library(gplots) ; library(RColorBrewer)
+library(Matrix)
+library(igraph) ; library(visNetwork)
+
+SFARI_colour_hue = function() pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3')
+```
+<br><br>
+
+### Input
+
+- ./../SFARI_genes_01-15-2019.csv of SFARI genes information downloaded from https://gene.sfari.org/database/gene-scoring/. Downloaded version 01-15-19.
+
+- SFARI_scraping/genes/*gene_name*.csv file for each of the SFARI genes with the information of all the reports related to it obtained using the SFARI_scraper.py script and scrapy package.
+
+- MeSH_terms_by_paper.json file with all the MeSH terms associated to each of the articles from the SFARI_scraper output files. Retrieved from the NCBI e-utils api using the get_articles_metadata.R script and reutils package. Downloaded on 24/05/19.
+
+- year_by_paper.csv file with the year of publication of every paper
+
+<br><br><br>
+
+### Preprocessing
+
+#### Create gene-article data frame
+```{r}
+
+### GET LIST OF GENES
+list_gene_files = list.files('./SFARI_scraping_env/SFARI_scraping/genes/')
+
+
+# GET LIST OF PUBMED IDS
+get_pubmed_IDs = function(){
+  all_pubmed_ids = c()
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./SFARI_scraping_env/SFARI_scraping/genes/', gene_file))
+    pubmed_ids = unique(file$pubmed.ID)
+    all_pubmed_ids = unique(c(all_pubmed_ids, pubmed_ids)) 
+  }
+  all_pubmed_ids = as.character(all_pubmed_ids)
+  return(all_pubmed_ids)
+}
+
+all_pubmed_ids = get_pubmed_IDs()
+
+
+# CREATE GENE-ARTICLE DATA FRAME
+SFARI_genes_info = read.csv('./..//Data/SFARI/SFARI_genes_01-15-2019.csv') %>% mutate('ID'=gene.symbol)
+
+create_gene_pmID_df = function(){
+  
+  gene_pmID_list = list()
+  
+  # Fillout list
+  for(gene_file in list_gene_files){
+    file = read.delim(paste0('./SFARI_scraping_env/SFARI_scraping/genes/', gene_file))
+    pubmed_ids = as.character(unique(file$pubmed.ID))
+    gene_pmID_list[[gsub('.csv', '', gene_file)]] = pubmed_ids
+  }
+  
+  gene_pmID_df = gene_pmID_list %>% stack %>% rename('gene'=ind, 'pubmedID'=values) %>% select(gene, pubmedID)
+    
+  return(gene_pmID_df)
+}
+
+gene_pmID_df = create_gene_pmID_df()
+
+print(paste0('Genes: ', length(unique(gene_pmID_df$gene)), '     Articles: ', length(unique(gene_pmID_df$pubmedID))))
+
+rm(list_gene_files)
+```
+
+#### Create article-year data frame
+```{r, warning=FALSE, fig.width=10}
+year_paper_df = read.csv('./../Data/SFARI/year_by_paper.csv')
+
+plot_data = year_paper_df %>% dplyr::select(year) %>% group_by(year) %>% count
+
+print(paste0('Articles: ', nrow(year_paper_df), '     Years: ', nrow(plot_data)))
+
+ggplotly(plot_data %>% ggplot(aes(year, n, fill=n)) + geom_bar(stat='identity') + 
+         ggtitle('Publication Years') + theme_minimal() + coord_flip())
+
+rm(plot_data)
+```
+
+#### Create gene-year data frame
+
+Even though there are more 2018 papers than 2017, they are referenced left often. Perhaps the SFARI gene database should be updated? Or perhaps newer articles are referencing less papers than ~5 years ago?
+
+Most referenced articles:
+
+1. https://www.ncbi.nlm.nih.gov/pubmed/25363768: The contribution of de novo coding mutations to autism spectrum disorder
+
+2. https://www.ncbi.nlm.nih.gov/pubmed/25363760: Synaptic, transcriptional and chromatin genes disrupted in autism
+
+3. https://www.ncbi.nlm.nih.gov/pubmed/25533962: Large-scale discovery of novel genetic causes of developmental disorders
+
+```{r, warning=FALSE}
+plot_data = gene_pmID_df %>% mutate('pubmedID'=as.integer(pubmedID)) %>%
+            left_join(year_paper_df, by='pubmedID') %>% group_by(pubmedID, year) %>% count
+
+ggplotly(plot_data %>% ggplot(aes(year, n, id='pubmedID')) + geom_point(alpha=0.1) + scale_y_log10() + 
+         geom_smooth(method='loess', size=0.5) + ggtitle('Mentions in SFARI database of each publication') + theme_minimal())
+
+```
+
+```{r, warning=FALSE, fig.width=10}
+gene_year_df = gene_pmID_df %>% mutate('pubmedID'=as.integer(pubmedID)) %>% 
+               left_join(year_paper_df, by='pubmedID') %>%
+               left_join(SFARI_genes_info, by=c('gene'='ID')) %>%
+               dplyr::select(gene, pubmedID, year, gene.score, syndromic) %>%
+               mutate('gene.score'=as.factor(gene.score))
+
+plot_data = gene_year_df %>% group_by(year, pubmedID) %>% count
+
+ggplotly(plot_data %>% ggplot(aes(year, n, fill=n, id=pubmedID)) + geom_bar(stat='identity') + coord_flip() + 
+         ggtitle('Mentions of each paper in the SFARI gene database by year') + theme_minimal())
+
+rm(plot_data)
+```
+
+All gene groups seem to follow similar patterns
+```{r, warning=FALSE, fig.width=10}
+bins = max(gene_year_df$year, na.rm = TRUE)-min(gene_year_df$year, na.rm = TRUE)+1
+ggplotly(gene_year_df %>% ggplot(aes(year, fill=gene.score)) + geom_histogram(position='identity', bins=bins) + 
+         facet_grid(gene.score~.) + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') +
+         ggtitle('Publication Years by gene preserving scale') + theme_minimal() + theme(legend.position='none'))
+```
+
+The research of genes with the highest SFARI scores seems to have increased in the last years, while the lower SFARI scores seem to have decreased in the last years, specially score 6. This could be making the attention bias towards higher scored genes bigger.
+```{r, warning=FALSE, fig.width=10}
+ggplotly(gene_year_df %>% ggplot(aes(year, fill=gene.score)) + geom_histogram(position='identity', bins=bins) + 
+         facet_grid(gene.score~., scales='free_y') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') +
+         ggtitle('Publication Years by gene preserving scale adjusting scales') + theme_minimal() + theme(legend.position='none'))
+
+rm(bins)
+```
+
+### Network Analysis
+
+#### Create gene-year matrix
+```{r}
+gene_year_df_summ = gene_year_df %>% group_by(gene, year) %>% count %>% ungroup %>% ungroup %>% filter(complete.cases(.))
+
+# Create matrix
+gene_year_mat = matrix(0, nrow=length(unique(gene_year_df_summ$gene)), ncol=length(unique(gene_year_df_summ$year)))
+rownames(gene_year_mat) = unique(gene_year_df_summ$gene)
+colnames(gene_year_mat) = sort(unique(gene_year_df_summ$year))
+
+# Fill matrix
+gene_year_df_summ = gene_year_df_summ %>% as.matrix
+for(i in 1:nrow(gene_year_df_summ)) gene_year_mat[gene_year_df_summ[i,1], gene_year_df_summ[i,2]] = gene_year_df_summ[i,3]
+
+gene_year_mat = Matrix(gene_year_mat, sparse = TRUE)
+
+rm(gene_year_df_summ, i, gene_year_df)
+```
+
+#### Create Network
+
+On average, each gene is connected to a third of the genes by the year of publication of their articles
+```{r}
+# EDGES
+gene_gene_mat = gene_year_mat %*% t(gene_year_mat)
+gene_names = rownames(gene_year_mat)
+
+edges = summary(gene_gene_mat) %>% rename('from'=i, 'to'=j, 'count'=x) %>% 
+        mutate(from = gene_names[from], to = gene_names[to]) %>%
+        filter(from!=to)
+
+# Convert count to fraction
+gene_year_mat_rowsums = rowSums(gene_year_mat)
+names(gene_year_mat_rowsums) = rownames(gene_gene_mat)
+edges = edges %>% mutate('weight'=count/(gene_year_mat_rowsums[from]+gene_year_mat_rowsums[to]))
+
+# NODES
+nodes = SFARI_genes_info %>% dplyr::select(gene.symbol, gene.score, syndromic, number.of.reports) %>% 
+        mutate(id = gene.symbol, title=gene.symbol, value=number.of.reports,
+               shape=ifelse(syndromic==0, 'circle','square'),
+               color_score=case_when(gene.score==1~'#FF7631', gene.score==2~'#FFB100',
+                                     gene.score==3~'#E8E328', gene.score==4~'#8CC83F',
+                                     gene.score==5~'#62CCA6', gene.score==6~'#59B9C9',
+                                     is.na(gene.score) ~ '#b3b3b3')) %>%
+        mutate('color'=color_score) %>% filter(!duplicated(id)) %>% 
+        filter(gene.symbol %in% unique(c(edges$from, edges$to)))
+
+# Details:
+print(paste0('Nodes: ', nrow(nodes),'        Edges: ', nrow(edges)/2))
+```
+
+#### Calculate eigencentrality by Gene Score
+
+The higher the SFARI score, the higher the eigencentrality of the genes in the Network. Same with syndromic tag
+```{r, fig.width=10}
+graph = graph_from_data_frame(edges, vertices=nodes, directed=FALSE)
+graph = graph %>% simplify(edge.attr.comb='first')
+
+eigen_centrality_output = eigen_centrality(graph)
+eigencentr = as.numeric(eigen_centrality_output$vector)
+graph = graph %>% set_vertex_attr('eigencentrality', value=eigencentr)
+
+plot_data = data.frame('gene.score'= as.factor(vertex_attr(graph, 'gene.score')),
+                       'Syndromic'= as.logical(vertex_attr(graph, 'syndromic')),
+                       'Eigencentrality'= vertex_attr(graph, 'eigencentrality')) %>%
+                       mutate('gene.score'=ifelse(is.na(gene.score), 'None', gene.score))
+
+correlation_scr = cor(nodes$gene.score[!is.na(nodes$gene.score)], eigencentr[!is.na(nodes$gene.score)])
+correlation_syn = cor(as.numeric(plot_data$Syndromic), plot_data$Eigencentrality)
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, Eigencentrality, fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + theme(legend.position='none'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(Syndromic, Eigencentrality, fill=Syndromic)) + geom_boxplot() + 
+     theme_minimal() + theme(legend.position='none') + 
+     ggtitle(paste0('Correlation = ', round(correlation_scr, 2), ' (left) and ', round(correlation_syn,2), ' (right)')))
+
+subplot(p1, p2, nrows=1, widths=c(0.7, 0.3))
+
+rm(correlation_scr, correlation_syn, p1, p2)
+```
+
+When separating the SFARI scores by syndromic tag, the relation between eigencentrality and score persists
+```{r, fig.width=10}
+corr_non_syn = cor(nodes$gene.score[!is.na(nodes$gene.score) & nodes$syndromic==0], 
+                   eigencentr[!is.na(nodes$gene.score) & nodes$syndromic==0])
+corr_syn = cor(nodes$gene.score[!is.na(nodes$gene.score) & nodes$syndromic==1], 
+               eigencentr[!is.na(nodes$gene.score) & nodes$syndromic==1])
+ggplotly(plot_data %>% ggplot(aes(gene.score, Eigencentrality, fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue()) + theme_minimal() + theme(legend.position='none') +
+         facet_wrap( ~ Syndromic, ncol=2) + ggtitle(paste0('Correlation = ', round(corr_non_syn, 4),
+                                                           ' (left) and ', round(corr_syn, 4), ' (right)')))
+
+rm(plot_data, corr_non_syn, corr_syn, nodes, edges)
+```
+
+Most of the central nodes belong to SFARI score 1
+```{r}
+plot_data = data.frame('id'=graph %>% get.vertex.attribute('name'), 'eigencentrality'=eigencentr) %>%
+            left_join(SFARI_genes_info, by=c('id'='ID')) %>% top_n(25, wt=eigencentrality)
+
+ggplotly(plot_data %>% ggplot(aes(reorder(id, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+         geom_bar(stat='identity') + coord_flip() + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') +
+         ggtitle(paste0('Top 25 genes with the highest Network centrality')) + xlab('') + ylab('Eigencentrality') + 
+         theme_minimal() + theme(legend.position='none'))
+
+rm(plot_data)
+```
+
+<!-- ```{r, fig.width=10, fig.height=6} -->
+<!-- visIgraph(graph) %>% visOptions(selectedBy='gene.score', highlightNearest=TRUE) %>%  -->
+<!--                               visIgraphLayout(randomSeed=123) -->
+<!-- ``` -->
+**Note:** Network is a bit heavy and not very informative
+
+#### Community detection:
+
+```{r, warning=FALSE, error=FALSE}
+
+comms_louvain = cluster_louvain(graph)
+modules = comms_louvain %>% membership
+
+color_pal = viridis_pal()(max(modules)) %>% substr(1,7)
+graph = graph %>% set_vertex_attr('module', value=as.numeric(modules)) %>% 
+                  set_vertex_attr('color_modules', value=color_pal[as.numeric(modules)]) %>%
+                  set_vertex_attr('color', value=color_pal[as.numeric(modules)])
+
+comm_sizes = sizes(comms_louvain) %>% data.frame %>% rename(Module=Community.sizes, size=Freq)
+ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='identity') + 
+         ggtitle('Number of genes in each module') + theme_minimal() + theme(legend.position = 'none'))
+
+hm_data = table(vertex_attr(graph, 'gene.score'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
+          as.data.frame.matrix %>% as.matrix
+rownames(hm_data) = c('S1','S2','S3','S4','S5','S6','None')
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[8:25])
+
+hm_data = table(vertex_attr(graph, 'syndromic'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
+          as.data.frame.matrix %>% as.matrix
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[8:25])
+```
+
+Separating by syndromic tag the SFARI scores
+```{r, warning=FALSE}
+hm_data = data.frame('syndromic_gene.score'=paste(vertex_attr(graph, 'syndromic'), '_',vertex_attr(graph, 'gene.score')),
+                     'module'=vertex_attr(graph, 'module'))
+hm_data = table(hm_data$syndromic_gene.score, hm_data$module) %>% as.data.frame.matrix %>% as.matrix
+heatmap.2(hm_data, cellnote=hm_data, notecol='white', scale='row', trace='none', 
+          key=FALSE, xlab='Module', ylab='Syndromic tag + SFARI Score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+
+rm(color_pal, hm_data)
+```
+
+#### Module characterisation
+
+Most important genes for each module coloured by SFARI score
+```{r, warning=FALSE, fig.height=3}
+
+module_info = tibble('module'=character(), 'top_term'=character(), size=integer())
+
+for(i in names(sizes(comms_louvain))){
+  
+  module_vertices = names(modules)[modules==i]
+  
+  # Creat subgraph
+  module_graph = induced_subgraph(graph, module_vertices)
+  
+  # Calculate eigencentrality
+  eigen_centrality_output = eigen_centrality(module_graph)
+  eigencentr = as.numeric(eigen_centrality_output$vector)
+  names(eigencentr) = module_vertices
+  
+  module_info = module_info %>% add_row('module'=i, 'top_term'=names(eigencentr)[eigencentr==max(eigencentr)][1], 
+                                        'size'=length(module_vertices))
+    
+  # Plot eigencentrality of top 10 genes
+  plot_data = data.frame('gene'=names(eigencentr), 'eigencentrality'=eigencentr) %>%
+              top_n(10, wt=eigencentrality) %>% left_join(SFARI_genes_info, by=c('gene'='ID'))
+  print(plot_data %>% ggplot(aes(reorder(gene, eigencentrality), eigencentrality, fill=as.factor(gene.score))) + 
+       geom_bar(stat='identity') + scale_fill_manual(values=SFARI_colour_hue(), na.value='#b3b3b3') + coord_flip() + 
+       ggtitle(paste0('Top genes for Module ', i)) + xlab('Genes') + ylab('Eigencentrality') + 
+       theme_minimal() + theme(legend.position='none'))
+
+}
+
+rm(i, module_vertices, module_graph, eigen_centrality_output, eigencentr, plot_data)
+```
+
+Most important years for each module
+```{r, fig.height=8, warning=FALSE}
+for(i in names(sizes(comms_louvain))){
+  
+  module_genes = names(modules)[modules==i]
+  
+  # Filter genes belonging to module and column with non-zero values
+  module_gene_year_mat = gene_year_mat[rownames(gene_year_mat) %in% module_genes,]
+  module_gene_year_mat = module_gene_year_mat[,colSums(module_gene_year_mat)>0]
+  
+  # Do PCA and extract 1st PC
+  pca_module = prcomp(module_gene_year_mat, scale.=TRUE)
+  module_eigengene = pca_module$rotation[,'PC1']
+  names(module_eigengene) = colnames(module_gene_year_mat)
+  
+  # Plot module's year relevance
+  plot_data = data.frame('year'=names(module_eigengene), 'eigencentrality'=module_eigengene) %>%
+              right_join(data.frame('year'=factor(sort(unique(year_paper_df$year), decreasing=T))), by='year') %>%
+              mutate('eigencentrality'=ifelse(is.na(eigencentrality), 0, eigencentrality))
+  
+  print(plot_data %>% ggplot(aes(factor(year), eigencentrality, fill=abs(eigencentrality))) + 
+       geom_bar(position='identity', stat='identity') + scale_fill_viridis_c() + coord_flip() + 
+       ggtitle(paste0('Top Years for Module ', i)) + 
+       xlab('Years') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
+  
+}
+
+rm(i, module_genes, module_gene_year_mat, pca_module, module_eigengene, plot_data)
+```

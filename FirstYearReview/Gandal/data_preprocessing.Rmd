@@ -451,8 +451,7 @@ rm(sv_data)
 *Four genes did not converge, so increased the maxit and one got fixed but didn't get the other three to converge as well, so instead I removed them
 ```{r normalisation_2nd_try}
 
-# Defined counts and rowRanges in the SVA analysis
-
+# counts and rowRanges already defined in the SVA analysis
 se = SummarizedExperiment(assays=SimpleList(counts=counts), rowRanges=rowRanges, colData=datMeta_sva)
 dds = DESeqDataSet(se, design = ~ Batch + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + 
                                   SV10 + SV11 + SV12 + SV13 + Diagnosis_)
