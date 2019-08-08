@@ -1,11 +1,5 @@
 # PhD-InitialExperiments
 
-## R_markdowns
+This folder contains all the experiments performed on the first 9 months of the PhD. [Gandal](https://github.com/magdalena90/PhD-InitialExperiments/tree/master/Gandal), [Network Analysis](https://github.com/magdalena90/PhD-InitialExperiments/tree/master/NetworkAnalysis) and [SFARI_genes](https://github.com/magdalena90/PhD-InitialExperiments/tree/master/SFARI_genes) contain the original experiments and may include several version of the same experiment, so all of the RMarkdowns are identified with the date they were created at the beginning of their name.
 
-* **clustering_*_03_08.Rmd**: Including all original genes
-
-* **clustering_*_03_15.Rmd**: Filtering DE genes obtained from `fit` function keeping genes with p-value < 0.05, no filtering based on network z-score connectivity
-
-* **clustering_*_03_19.Rmd**: Filtering DE genes obtained from `fit` function using `topTable` keeping genes with an **adjusted** p-value < 0.05, no filtering based on network z-score connectivity
-
-* **clustering_*_03_20.Rmd**: iltering DE genes obtained from `fit` function using `topTable` keeping genes with an **adjusted** p-value < 0.05 and a log2 fold change > log2(1.2). No filtering based on network z-score connectivity
+The [FirstYearReview](https://github.com/magdalena90/PhD-InitialExperiments/tree/master/FirstYearReview) folder contains the cleaned, final version of all the experiments performed in the other folders, all done using a single preprocessing pipeline for the data. The results presented in the First Year Review were taken from here.
