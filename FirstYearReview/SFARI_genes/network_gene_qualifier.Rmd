@@ -1,5 +1,5 @@
 ---
-title: 'Gene-Qualifiers Analysis'
+title: 'Gene-Qualifier Network Analysis'
 output:
   html_document:
     code_folding: 'hide'
@@ -358,7 +358,7 @@ hm_data = table(vertex_attr(graph, 'gene.score'), vertex_attr(graph, 'module'), 
           as.data.frame.matrix %>% as.matrix
 rownames(hm_data) = c('S1','S2','S3','S4','S5','S6','None')
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[5:25])
+          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 hm_data = table(vertex_attr(graph, 'syndromic'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
           as.data.frame.matrix %>% as.matrix
@@ -372,7 +372,7 @@ hm_data = data.frame('syndromic_gene.score'=paste(vertex_attr(graph, 'syndromic'
                      'module'=vertex_attr(graph, 'module'))
 hm_data = table(hm_data$syndromic_gene.score, hm_data$module) %>% as.data.frame.matrix %>% as.matrix
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='Syndromic tag + SFARI Score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+          key=FALSE, xlab='Module', ylab='Syndromic tag + SFARI Score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 rm(color_pal, hm_data)
 ```

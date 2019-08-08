@@ -1,6 +1,12 @@
 
 *.RData
 *.Rhistory
-*/Figures/
 Data/
+*Figures/
+*SFARI_scraping_env/
+*raw_data/
+*working_data/
+*results/
+*Pipfile*
+*.idea/
 

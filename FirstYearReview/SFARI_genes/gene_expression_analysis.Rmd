@@ -246,9 +246,13 @@ ggplotly(lfc_counts_all %>% ggplot(aes(lfc, perc, color=group)) + geom_point(aes
 
 ### Relation between mean expression and fold change
 
-```{r, warning=FALSE}
-plot_data = data.frame('ID'=rownames(datExpr), 'meanExpr'=rowMeans(datExpr)) %>% left_join(DE_info, by='ID')
+There is a clear negative relation between lfc and mean expression, for both differentially expressed and not differentially expressed groups of genes.
 
-plot_data %>% ggplot(aes(meanExpr, abs(log2FoldChange))) + geom_point(alpha=0.05, color='#0086b3') + 
-              geom_smooth(method='lm', color='gray') + theme_minimal() + scale_y_sqrt()
+```{r, warning=FALSE,fig.width=10}
+plot_data = data.frame('ID'=rownames(datExpr), 'meanExpr'=rowMeans(datExpr)) %>% left_join(DE_info, by='ID') %>%
+            mutate('statisticallySignificant'=padj<0.05 & !is.na(padj))
+
+plot_data %>% ggplot(aes(meanExpr, abs(log2FoldChange), color=statisticallySignificant)) + geom_point(alpha=0.1) +
+              geom_smooth(method='lm') + theme_minimal() + scale_y_sqrt() + theme(legend.position = 'bottom') +
+              xlab('Mean Expression') + ylab('abs(lfc)') + ggtitle('Log fold change by level of expression')
 ```

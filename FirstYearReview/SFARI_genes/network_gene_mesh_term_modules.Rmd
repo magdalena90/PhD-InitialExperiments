@@ -1,5 +1,5 @@
 ---
-title: 'Gene-Mesh Term Modules Analysis'
+title: 'Gene-Mesh Term Modules Network Analysis'
 output:
   html_document:
     code_folding: 'hide'
@@ -30,7 +30,7 @@ SFARI_colour_hue = function() pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#
 
 - ./../Data/SFARI/MeSH_terms_by_paper.json file with all the MeSH terms associated to each of the articles from the SFARI_scraper output files. Retrieved from the NCBI e-utils api using the get_articles_metadata.R script and reutils package. Downloaded on 24/05/19.
 
-- Cluster membership for each MeSH term
+- ./../Data/SFARI/article_module_matrix_wo_qualifiers.csv with cluster membership for each MeSH term (based on articles, not genes)
 
 <br><br><br>
 
@@ -287,12 +287,12 @@ ggplotly(comm_sizes %>% ggplot(aes(Module, size, fill=size)) + geom_bar(stat='id
 hm_data = table(vertex_attr(graph, 'gene.score'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
           as.data.frame.matrix %>% as.matrix
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+          key=FALSE, xlab='Module', ylab='SFARI score', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 hm_data = table(vertex_attr(graph, 'syndromic'), vertex_attr(graph, 'module'), useNA='ifany') %>% 
           as.data.frame.matrix %>% as.matrix
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', Rowv=F, Colv=F, scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 rm(comm_sizes)
 ```
@@ -303,7 +303,7 @@ hm_data = data.frame('syndromic_gene.score'=paste(vertex_attr(graph, 'syndromic'
                      'module'=vertex_attr(graph, 'module'))
 hm_data = table(hm_data$syndromic_gene.score, hm_data$module) %>% as.data.frame.matrix %>% as.matrix
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 rm(color_pal, hm_data)
 ```

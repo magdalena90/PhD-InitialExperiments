@@ -1,5 +1,5 @@
 ---
-title: 'Gene-Mesh Terms Analysis'
+title: 'Gene-Mesh Term Network Analysis'
 output:
   html_document:
     code_folding: 'hide'
@@ -387,7 +387,7 @@ hm_data = data.frame('syndromic_gene.score'=paste(vertex_attr(graph, 'syndromic'
                      'module'=vertex_attr(graph, 'module'))
 hm_data = table(hm_data$syndromic_gene.score, hm_data$module) %>% as.data.frame.matrix %>% as.matrix
 heatmap.2(hm_data, cellnote=hm_data, notecol='white', scale='row', trace='none', 
-          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25))
+          key=FALSE, xlab='Module', ylab='Syndromic', col=colorRampPalette(brewer.pal(8, 'RdPu'))(25)[10:25])
 
 rm(color_pal)
 ```
@@ -444,7 +444,7 @@ for(i in names(sizes(comms_louvain))){
   # Plot module's most relevant MeSH terms
   plot_data = data.frame('mesh_term'=names(module_eigengene), 'eigencentrality'=module_eigengene) %>%
               top_n(25, wt=abs(eigencentrality))
-  print(plot_data %>% ggplot(aes(reorder(mesh_term, abs(eigencentrality)), eigencentrality, fill=eigencentrality)) + 
+  print(plot_data %>% ggplot(aes(reorder(mesh_term, abs(eigencentrality)), eigencentrality, fill=abs(eigencentrality)) )+ 
        geom_bar(position='identity', stat='identity') + scale_fill_viridis_c() + coord_flip() + 
        ggtitle(paste0('Top MeSH terms for Module ', i)) + 
        xlab('MeSH Terms') + ylab('Eigencentrality') + theme_minimal() + theme(legend.position='none'))
