@@ -1,5 +1,5 @@
 ---
-title: 'Sample Clustering with DE genes'
+title: 'Sample Clustering'
 output:
   html_document:
     code_folding: 'hide'
@@ -20,6 +20,7 @@ library(ClusterR)
 library(WGCNA)
 library(pdfCluster) ; library(gplots) ; library(dendextend)
 ```
+<br><br>
 
 Load preprocessed dataset (preprocessing code in data_preprocessing.Rmd)
 ```{r, echo=TRUE, include=FALSE, warning=FALSE, message=FALSE}
@@ -69,7 +70,7 @@ best_k = 3
 abline(v = best_k, col='blue')
 
 datExpr_k_means = kmeans(datExpr_t, best_k, nstart=25)
-clusterings[['km']] = datExpr_k_means$cluster
+clusterings[['KMeans']] = datExpr_k_means$cluster
 ```
 <br><br>
 
@@ -96,7 +97,7 @@ Colors:
 - Age: Purple=youngest, Yellow=oldest
 
 ```{r, fig.width=10}
-clusterings[['hc']] = cutree(h_clusts, best_k)
+clusterings[['HC']] = cutree(h_clusts, best_k)
 
 create_viridis_dict = function(){
   min_age = datMeta$Age %>% min
@@ -117,8 +118,8 @@ dend_meta = datMeta[match(labels(h_clusts), rownames(datMeta)),] %>%
                                         Brain_lobe=='Occipital'~'#C77CFF'),
                    'Age' = viridis_age_cols[as.character(Age)]) %>%            # Purple: young, Yellow: old
             dplyr::select(Age, Region, Sex, Diagnosis)
-h_clusts %>% set('labels', rep('', nrow(datMeta))) %>% set('branches_k_color', k=best_k) %>% plot
-colored_bars(colors=dend_meta)
+h_clusts %>% set('labels', rep('', nrow(datMeta))) %>% set('branches_k_color', k=best_k) %>% plot(ylim=c(12,40))
+colored_bars(colors=dend_meta)#, y_scale=10) # for the PDF
 ```
 <br><br>
 
@@ -129,7 +130,7 @@ Chose the best clustering to be with k=8, which is basically two big clusters an
 cc_output = datExpr_t %>% as.matrix %>% t %>% 
   ConsensusClusterPlus(maxK=10, reps=50, seed=123, title='./../Data/Gandal/consensusClustering/samples_DE_genes', plot='png')
 best_k = 8
-clusterings[['cc']] = cc_output[[best_k]]$consensusClass
+clusterings[['CC']] = cc_output[[best_k]]$consensusClass
 ```
 
 ```{r, echo=FALSE, out.width = '50%'}
@@ -157,13 +158,13 @@ Note: Using the PCA reduced matrix because the algorithm didn't converge with th
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 keep=30
 ICA_output = datExpr_redDim[,1:keep] %>% runICA(nbComp=keep, method='JADE')
-signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
+signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(colnames(ICA_output$S)[apply(ICA_output$S, 2, kurtosis)>3])
 ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F, verbose=F)$qval<0.01) %>% data.frame
 ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
 
-clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+clusterings[['ICA']] = rep(NA, nrow(ICA_clusters))
 ICA_clusters_names = colnames(ICA_clusters)
-for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+for(c in ICA_clusters_names) clusterings[['ICA']][ICA_clusters[,c]] = c
 ```
 <br>
 
@@ -276,8 +277,8 @@ rm(i, j, cluster1, cluster2, clusters_plus_phenotype, cluster_sim)
 ```{r, fig.width=10}
 plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
               mutate(ID = rownames(.),                            Subject_ID = datMeta$Subject_ID,
-                     KMeans = as.factor(clusterings[['km']]),     Hierarchical = as.factor(clusterings[['hc']]),
-                     Consensus = as.factor(clusterings[['cc']]),  ICA = as.factor(clusterings[['ICA_min']]),
+                     KMeans = as.factor(clusterings[['KMeans']]),     Hierarchical = as.factor(clusterings[['HC']]),
+                     Consensus = as.factor(clusterings[['CC']]),  ICA = as.factor(clusterings[['ICA']]),
                      GMM = as.factor(clusterings[['GMM']]),       WGCNA = as.factor(clusterings[['WGCNA']]),
                      Sex = as.factor(datMeta$Sex),                Region = as.factor(datMeta$Brain_lobe), 
                      Diagnosis = as.factor(datMeta$Diagnosis_),   Age = datMeta$Age)

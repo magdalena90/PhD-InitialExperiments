@@ -1,5 +1,5 @@
 ---
-title: 'DE Gene Clustering'
+title: 'Gene Clustering'
 output:
   html_document:
     code_folding: 'hide'
@@ -83,10 +83,17 @@ rm(plot_data, plot_data_SFARI)
 
 #### Dimensionality reduction using PCA
 
-To make calculations more efficient for the more time consuming methods, we can perform PCA and keep the first 16 principal components which explain over 99.5% of the total variance
+To make calculations more efficient for the more time consuming methods, we can perform PCA and keep the first principal components. As it can be seen in the plot below, the first principal component explains almost all of the variance and after it there doesn't seem to be a specific cutoff until after the 60th PC, when the variance explained becomes 0. So as an initial filtering I'm keeping the first 67 principal components.
+
 ```{r}
 pca = prcomp(datExpr)
-datExpr_redDim = pca$x %>% data.frame %>% dplyr::select(PC1:PC16)
+
+var_exp = data.frame('PC'=1:ncol(datExpr), 'var_explained'=summary(pca)$importance[2,])
+ggplotly(var_exp %>% ggplot(aes(PC, var_explained)) + geom_point() + 
+         geom_vline(xintercept=67.5, linetype='dashed', color='gray') + 
+         scale_y_sqrt() + theme_minimal() + ggtitle('% of variance explained by principal component'))
+
+datExpr_redDim = pca$x %>% data.frame %>% dplyr::select(PC1:PC67)
 ```
 
 ## Clustering Methods
@@ -116,7 +123,7 @@ best_k = 4
 abline(v = best_k, col='blue')
 
 datExpr_k_means = kmeans(datExpr, best_k, iter.max=100, nstart=25)
-clusterings[['km']] = datExpr_k_means$cluster
+clusterings[['KMeans']] = datExpr_k_means$cluster
 ```
 
 <br><br>
@@ -135,7 +142,7 @@ best_k = 10
 SFARI and Neuronal related genes seem to concentrate mainly in the aqua, blue and pink clusters
 
 ```{r hierarchical_clustering_colored, warning=FALSE, fig.width=10, fig.height=6}
-clusterings[['hc']] = cutree(h_clusts, best_k)
+clusterings[['HC']] = cutree(h_clusts, best_k)
 
 create_viridis_dict = function(){
   min_score = clusterings[['SFARI_score']] %>% as.numeric %>% min(na.rm=TRUE)
@@ -157,7 +164,7 @@ dend_meta = DE_info[match(labels(h_clusts), DE_info$ID),] %>%
 
 h_clusts %>% as.dendrogram %>% set('labels', rep('', nrow(datMeta))) %>% 
              set('branches_k_color', k=best_k) %>% plot
-colored_bars(colors=dend_meta)
+colored_bars(colors=dend_meta)#, y_scale=30) # for the PDF
 ```
 <br><br>
 
@@ -171,7 +178,7 @@ Samples are grouped into two big clusters, and then many outliers.
 # save(cc_output, file='./../Data/Gandal/consensusClustering/genes_DE/l1/cc_output.RData')
 load('./../Data/Gandal/consensusClustering/genes/l1/cc_output.RData')
 best_k = 3 # 2 clusters and outliers
-clusterings[['cc_l1']] = cc_output[[best_k]]$consensusClass
+clusterings[['CC']] = cc_output[[best_k]]$consensusClass
 
 # NO SUBCLUSTERS
 # clusterings[['cc_l2']] = clusterings[['cc_l1']]
@@ -198,7 +205,7 @@ knitr::include_graphics('./../Data/Gandal/consensusClustering/genes/l1/consensus
 
 ### Independent Component Analysis
 
-Following [this paper's](www.journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1002367) guidelines:
+Following [this paper's](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1002367) guidelines:
 
 0. Run PCA and keep enough components to explain 60% of the variance (keeping 99.5% of the variance)
 
@@ -208,20 +215,22 @@ Following [this paper's](www.journals.plos.org/plosgenetics/article?id=10.1371/j
 
 3. Assign genes to clusters with FDR<0.01 using the fdrtool package
 
+**Note:** It takes too long to run ICA with all 67 principal components, so using the first 40 instead
+
 ```{r ICA, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
-ICA_output = datExpr_redDim %>% runICA(nbComp=ncol(datExpr_redDim), method='JADE')
-signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
+ICA_output = datExpr_redDim %>% runICA(nbComp=40, method='JADE')
+signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(colnames(ICA_output$S)[apply(ICA_output$S, 2, kurtosis)>3])
 ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F, verbose=F)$qval<0.01) %>% data.frame
 ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
 
-clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+clusterings[['ICA']] = rep(NA, nrow(ICA_clusters))
 ICA_clusters_names = colnames(ICA_clusters)
-for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+for(c in ICA_clusters_names) clusterings[['ICA']][ICA_clusters[,c]] = c
 
-clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
+# clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
 ```
 
-Leaves 76% of the genes without a cluster
+Leaves 69% of the genes without a cluster
 ```{r, fig.width=12}
 ICA_clusters %>% rowSums %>% table
 
@@ -230,23 +239,23 @@ ICA_clusters %>% rowSums %>% table
 #   theme_minimal() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank()) + coord_flip()
 ```
 
-Trying again these time with all of the principal components and 40 clusters
+Trying again these time with all of the principal components and 50 clusters
 ```{r ICA_more_components, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
-ICA_output = pca$x %>% data.frame %>% runICA(nbComp=40, method='JADE')
+ICA_output = datExpr_redDim %>% runICA(nbComp=50, method='JADE')
 signals_w_kurtosis = ICA_output$S %>% data.frame %>% dplyr::select(names(apply(ICA_output$S, 2, kurtosis)>3))
 ICA_clusters = apply(signals_w_kurtosis, 2, function(x) fdrtool(x, plot=F, verbose=F)$qval<0.01) %>% data.frame
 ICA_clusters = ICA_clusters[colSums(ICA_clusters)>1]
 ```
 
-Doesn't make a big difference (69%), but it's still better
+Doesn't make a big difference (67%), but it's still better
 ```{r, fig.width=12}
 ICA_clusters %>% rowSums %>% table
 
-clusterings[['ICA_min']] = rep(NA, nrow(ICA_clusters))
+clusterings[['ICA']] = rep(NA, nrow(ICA_clusters))
 ICA_clusters_names = colnames(ICA_clusters)
-for(c in ICA_clusters_names) clusterings[['ICA_min']][ICA_clusters[,c]] = c
+for(c in ICA_clusters_names) clusterings[['ICA']][ICA_clusters[,c]] = c
 
-clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
+# clusterings[['ICA_NA']] = is.na(clusterings[['ICA_min']])
 
 # ICA_clusters %>% mutate(cl_sum=rowSums(.)) %>% as.matrix %>% melt %>% ggplot(aes(Var2, Var1)) + 
 #   geom_tile(aes(fill=value)) + xlab('Clusters') + ylab('Samples') + 
@@ -318,13 +327,13 @@ manual_clusters_data = cbind(apply(datExpr_redDim, 1, mean), apply(datExpr_redDi
 colnames(manual_clusters_data) = c('mean','sd','cluster')
 manual_clusters_data = manual_clusters_data %>% mutate('cluster'=as.factor(cluster))
 p1 = manual_clusters_data %>% ggplot(aes(x=mean, color=cluster, fill=cluster)) + 
-  geom_density(alpha=0.4) + theme_minimal()
+  geom_density(alpha=0.4) + theme_minimal() + ggtitle('Mean expression') + xlab('Mean expression') + theme(legend.position = 'none')
 p2 = manual_clusters_data %>% ggplot(aes(x=sd, color=cluster, fill=cluster)) + 
-  geom_density(alpha=0.4) + theme_minimal()
-grid.arrange(p1, p2, ncol=2)
+  geom_density(alpha=0.4) + theme_minimal() + ggtitle('Standard deviation') + xlab('Standard deviation')
+grid.arrange(p1, p2, ncol=2, widths=c(0.47, 0.53))
 ```
 
-Separate genes into four and two Gaussians, respectively by their mean expression:
+Separate genes into three and two Gaussians, respectively by their mean expression:
 ```{r Manual_plus_mean, fig.width = 10}
 
 gg_colour_hue = function(n) {
@@ -383,18 +392,18 @@ rownames(c2_sd) = rownames(manual_clusters_data)[manual_clusters_data$cluster=='
 gmm_c2_sd = c2_sd %>% GMM(n_clusters)
 
 clusterings[['Manual_sd']] = as.character(clusterings[['Manual']])
-clusterings[['Manual_sd']][clusterings[['Manual']]==0] = gmm_c1_sd$Log_likelihood %>% 
+clusterings[['Manual_sd']][clusterings[['Manual']]==0] = gmm_c1_sd$Log_likelihood %>%
   apply(1, function(x) glue('1_',which.max(x)))
-clusterings[['Manual_sd']][clusterings[['Manual']]==1] = gmm_c2_sd$Log_likelihood %>% 
+clusterings[['Manual_sd']][clusterings[['Manual']]==1] = gmm_c2_sd$Log_likelihood %>%
   apply(1, function(x) glue('2_',which.max(x)))
 
 
 plot_gaussians = manual_clusters_data %>% ggplot(aes(x=sd)) +
   stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[1],
                 args=list(mean=gmm_c1_sd$centroids[1], sd=gmm_c1_sd$covariance_matrices[1])) +
-  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[2], 
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[2],
                 args=list(mean=gmm_c1_sd$centroids[2], sd=gmm_c1_sd$covariance_matrices[2])) +
-  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[3], 
+  stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[3],
                 args=list(mean=gmm_c1_sd$centroids[3], sd=gmm_c1_sd$covariance_matrices[3])) +
   stat_function(fun=dnorm, n=100, colour=gg_colour_hue(2*n_clusters)[4],
                 args=list(mean=gmm_c2_sd$centroids[1], sd=gmm_c2_sd$covariance_matrices[1])) +
@@ -405,7 +414,7 @@ plot_gaussians = manual_clusters_data %>% ggplot(aes(x=sd)) +
   theme_minimal()
 
 
-plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_sd']]))) + 
+plot_points = datExpr_redDim %>% ggplot(aes_string(x='PC1', y='PC2', color=as.factor(clusterings[['Manual_sd']]))) +
           geom_point() + theme_minimal()
 
 grid.arrange(plot_gaussians, plot_points, ncol=2)
@@ -449,10 +458,10 @@ cluster_sim = cluster_sim %>% as.matrix %>% round(2)
 heatmap.2(x = cluster_sim, Rowv = FALSE, Colv = FALSE, dendrogram = 'none', 
           cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
           cexRow = 1, cexCol = 1, margins = c(7,7))
- 
 
 rm(i, j, cluster1, cluster2, cluster_sim)
 ```
+
 ### Scatter plots
 
 * The simple clustering methods only consider the 1st component, dividing by vertical lines
@@ -469,14 +478,14 @@ rm(i, j, cluster1, cluster2, cluster_sim)
 
 ```{r scatter_plot_data}
 plot_points = datExpr_redDim %>% data.frame() %>% dplyr::select(PC1:PC3) %>%
-              mutate(ID = rownames(.),                                 k_means = as.factor(clusterings[['km']]),
-                hc = as.factor(clusterings[['hc']]),                   cc = as.factor(clusterings[['cc_l1']]),
-                ica = as.factor(clusterings[['ICA_min']]),
-                n_ica = as.factor(rowSums(ICA_clusters)),              gmm = as.factor(clusterings[['GMM']]),
-                wgcna = as.factor(clusterings[['WGCNA']]),             manual = as.factor(clusterings[['Manual']]),
-                manual_mean = as.factor(clusterings[['Manual_mean']]), manual_sd = as.factor(clusterings[['Manual_sd']]),   
+              mutate(ID = rownames(.),                                 KMeans = as.factor(clusterings[['KMeans']]),
+                HC = as.factor(clusterings[['HC']]),                   CC = as.factor(clusterings[['CC']]),
+                ICA = as.factor(clusterings[['ICA']]),
+                n_ICA = as.factor(rowSums(ICA_clusters)),              GMM = as.factor(clusterings[['GMM']]),
+                WGCNA = as.factor(clusterings[['WGCNA']]),             Manual = as.factor(clusterings[['Manual']]),
+                Manual_Mean = as.factor(clusterings[['Manual_mean']]), #manual_sd = as.factor(clusterings[['Manual_sd']]),   
                 SFARI = as.factor(clusterings[['SFARI_score']]),       SFARI_bool = as.factor(clusterings[['SFARI_bool']]),
-                syndromic = as.factor(clusterings[['syndromic']])) %>%
+                Syndromic = as.factor(clusterings[['syndromic']])) %>%
               bind_cols(DE_info[DE_info$ID %in% rownames(datExpr_redDim),]) %>% 
               mutate(avg_expr = log2(rowMeans(datExpr)+1)[rownames(datExpr) %in% rownames(datExpr_redDim)])
 rownames(plot_points) = plot_points$ID
