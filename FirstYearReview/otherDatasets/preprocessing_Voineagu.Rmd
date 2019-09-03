@@ -5,36 +5,413 @@ output:
     code_folding: 'hide'
 ---
 
-### Voinegau dataset [GSE28521](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE28521)
-```{r}
-library(GEOquery)
+### Voineagu  dataset [GSE28521](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE28521)
+```{r, echo=TRUE, include=FALSE}
+library(GEOquery) ; library(lumi) ; library(biomaRt) ; library(limma)
+library(WGCNA)
+library(tidyverse)
+library(plotly) ; require(gridExtra) ; library(viridis)
 
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
 ```
 
-Cannot use getGEO because everything is in different places
-```{r}
-# Supplementary file GSE28521_non-normalized_data.txt.gz
-gz_file = gzfile('./../Data/Voineagu/GSE28521_non-normalized_data.txt.gz','rt')
-datExpr = read.delim(gz_file)
+### Load data
 
-GSE28521 = getGEO('GSE28521', destdir='./../Data/Voineagu/', AnnotGPL = TRUE)
-
-a = getGEO(filename='./../Data/Voineagu/GSE28521_family.soft.gz')
-```
-
-
-```{r, warning=FALSE}
-if(!file.exists('./../Data/Voineagu/GSE28521_non_normalized_data.txt.gz')){
-  GSE28521 = getGEO('GSE28521', destdir='./../Data/Voineagu/')  
-} else{
-  GSE28521 = getGEO(filename='./../Data/Voineagu/GSE28521_series_matrix.txt.gz')
+Cannot use getGEO because everything is in different places, use lumiBatch object to gather all the information
+```{r load_data, warning=FALSE, message=FALSE}
+if(!file.exists('./../Data/Voineagu/LumiBatch_Voineagu.RData')){
+  
+  
+  create_Voineagus_pData_df = function(){
+    # Output: Dataframe with pData of Voineagu's raw data
+   
+    # BrainBank, chip_array
+    Voineagu_suppMat = read.csv('../Data/Voineagu/aux/supplementary_table_2.csv')
+    Voineagu_suppMat$chip_array = paste(Voineagu_suppMat$Chip, Voineagu_suppMat$Array, sep='_')
+    Voineagu_suppMat = Voineagu_suppMat[,c('Brain.Bank.Case.Id','Cortex.area','Disease.status',
+                                           'chip_array')]
+    Voineagu_suppMat$Cortex.area = as.character(Voineagu_suppMat$Cortex.area)
+    
+    # MATCH ALL FRONTAL + TEMPORAL IDS:
+    # GSM, BrainBank (relation obtained from the series matrix phenotype information)
+    ids_mapping = read.delim('../Data/Voineagu/aux/ids_mapping.txt', header=FALSE)
+    colnames(ids_mapping)[1:2] = c('GSM','Brain.Bank.Plus')
+    id_split = strsplit(as.character(ids_mapping$Brain.Bank.Plus),'_')
+    ids_mapping$Disease.status = sapply(id_split, `[`, 1)
+    ids_mapping$Brain.Bank.Case.Id = sapply(id_split, `[`, 2)
+    ids_mapping$Cortex.area = sapply(id_split, `[`, 3)
+    
+    cortex_area = list('C'='cerebellum','T'='temporal','F'='frontal')
+    ids_mapping$Cortex.area[ids_mapping$Cortex.area %in% names(cortex_area)] = 
+      cortex_area[ids_mapping$Cortex.area[ids_mapping$Cortex.area %in% names(cortex_area)]]
+    
+    disease_status = list('A'='autism', 'C'='control')
+    ids_mapping$Disease.status[ids_mapping$Disease.status %in% names(disease_status)] = 
+      disease_status[ids_mapping$Disease.status[ids_mapping$Disease.status %in% names(disease_status)]]
+    
+    # BrainBank, metadata
+    samples_metadata = read.delim2('../Data/Voineagu/aux/supplementary_table_1.tsv')
+    
+    # Frontal and temporal info:
+    ids_mapping_f_t = merge(Voineagu_suppMat, ids_mapping, 
+                            by=c('Brain.Bank.Case.Id','Disease.status','Cortex.area'))
+    
+    # MATCH ALL CEREBELLUM IDS:
+    # GSM, BrainBank, chip_array (cerebellum)
+    ids_mapping_c = read.delim('../Data/Voineagu/aux/cerebellum_ids_mapping.txt', header=FALSE)
+    colnames(ids_mapping_c) = c('GSM','Brain.Bank.Plus','chip_array')
+    
+    id_split = strsplit(as.character(ids_mapping_c$Brain.Bank.Plus),'_')
+    ids_mapping_c$Disease.status = sapply(id_split, `[`, 1)
+    ids_mapping_c$Brain.Bank.Case.Id = sapply(id_split, `[`, 2)
+    ids_mapping_c$Cortex.area = sapply(id_split, `[`, 3)
+    
+    ids_mapping_c$Cortex.area[ids_mapping_c$Cortex.area %in% names(cortex_area)] = 
+      cortex_area[ids_mapping_c$Cortex.area[ids_mapping_c$Cortex.area %in% names(cortex_area)]]
+    
+    ids_mapping_c$Disease.status[ids_mapping_c$Disease.status %in% names(disease_status)] = 
+    disease_status[ids_mapping_c$Disease.status[ids_mapping_c$Disease.status %in% names(disease_status)]]
+    
+    # JOIN FRONTAL+TEMPORAL INFO WITH CEREBELLUM AND ADD METADATA:
+    ids_mapping_all = rbind(ids_mapping_f_t, ids_mapping_c)
+    ids_mapping_all = ids_mapping_all[,c('GSM','chip_array','Brain.Bank.Case.Id','Cortex.area',
+                                         'Disease.status')]
+    
+    samples_full_data = merge(ids_mapping_all, samples_metadata, by='Brain.Bank.Case.Id')
+    samples_full_data$Cortex.area = as.character(samples_full_data$Cortex.area)
+    
+    # Add age group data
+    age_group = cut(as.numeric(samples_full_data$AGE), c(-0.5, 0, 0.6, 10, 20, 30, 40, 50, 60, 70, 80),
+                    labels=c('Fetal','Infant','Child','10-20','20s','30s','40s','50s','60s','70s'))
+    samples_full_data$age_group = as.character(age_group)
+    
+    return(samples_full_data)
+  }
+  
+  # AssayData data
+  # Supplementary file GSE28521_non-normalized_data.txt.gz
+  LumiBatch_v = lumiR('../Data/Voineagu/GSE28521_non-normalized_data.txt.gz')
+  
+  # Phenotype data
+  phenoData = create_Voineagus_pData_df()
+  phenoData = phenoData[match(colnames(exprs(LumiBatch_v)), phenoData$chip_array),]
+  phenoData$SEX[phenoData$SEX=='5'] = 'F'
+  rownames(phenoData) = phenoData$GSM
+  
+  # Change subject IDs from chip_array to GSM format
+  chipArray_to_gsm = phenoData$GSM
+  names(chipArray_to_gsm) = phenoData$chip_array
+  #colnames(LumiBatch_v) = chipArray_to_gsm[colnames(LumiBatch_v)]
+  
+  # LumiBatch object
+  pData(LumiBatch_v) = phenoData
+  
+  save(LumiBatch_v, file='../Data/Voineagu/LumiBatch_Voineagu.RData')
+  
+  
+  remove(assayData, phenoData, chipArray_to_gsm)
+} else {
+  load(paste('../Data/Voineagu/LumiBatch_Voineagu.RData', sep='/'))
+  datExpr = exprs(LumiBatch_v)
+  datMeta = pData(LumiBatch_v)
 }
 
-gds858 <- getGEO('GDS28521', destdir=".")
+# Get Biomart information
+ensembl = useMart("ENSEMBL_MART_ENSEMBL",dataset="hsapiens_gene_ensembl", host="feb2014.archive.ensembl.org") 
+getinfo = c("illumina_humanref_8_v3", "ensembl_gene_id","external_gene_id", "entrezgene", 
+            "chromosome_name", "start_position", "end_position")
+geneDat = getBM(attributes = getinfo, filters="illumina_humanref_8_v3",
+                values = rownames(datExpr), mart = ensembl)
+idx = match(rownames(datExpr), geneDat[,"illumina_humanref_8_v3"])
+datGenes = cbind(rownames(datExpr), geneDat[idx,])
+rownames(datGenes) = datGenes[,1]
+datGenes$length = datGenes$end_position-datGenes$start_position
 
-a = getGEO('GSE28521', destdir='./../Data/Voineagu/', GSEMatrix=FALSE) 
+# SFARI Genes
+SFARI_genes = read_csv('./../Data/SFARI/SFARI_genes_with_ensembl_IDs.csv')
 
-datExpr = exprs(GSE28521)
-datMeta = pData(GSE28521)
-datProbes = fData(GSE28521)
+
+# GO Annotations
+GO_annotations = read.csv('./../Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID' = as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal' = 1)
+
+
+# Combine SFARI and GO information
+gene_info = data.frame('ID'=datGenes$ensembl_gene_id) %>% left_join(SFARI_genes, by='ID') %>% 
+            mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+            left_join(GO_neuronal, by='ID') %>% 
+            mutate('gene.score'=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`)) %>%
+            mutate('gene.score'=ifelse(is.na(gene.score), 'None', gene.score))
+
+rm(ensembl, geneDat, GO_annotations, LumiBatch_v, getinfo, idx, create_Voineagus_pData_df)
 ```
+<br>
+
+Remove cerebellum samples:
+```{r}
+datMeta = datMeta[datMeta$Cortex.area!='cerebellum',]
+datExpr = datExpr[,datMeta$chip_array]
+```
+
+### Check sample distribution
+
+RNA-Seq for 58 cortical brain-tissue samples across  frontal and temporal lobes, comprising 29 samples from control subjects and 29 samples from ASD subjects
+
+```{r}
+print(paste0('Dataset includes ', nrow(datExpr), ' genes from ', ncol(datExpr), ' samples belonging to ', length(unique(datMeta$Brain.Bank.Case.Id)), ' different subjects.'))
+```
+<br>
+
+**Sex distribution:** There are five times more males than females
+```{r}
+table(datMeta$SEX)
+```
+<br> 
+
+**Age distribution:** Subjects between 5 and 56 years old with a mean close to 29
+```{r}
+summary(datMeta$AGE)
+```
+<br>
+
+**Diagnosis distribution:** Fairly balanced
+```{r}
+table(datMeta$Disease.status)
+```
+<br>
+
+**Brain region distribution:**
+```{r}
+table(datMeta$Cortex.area)
+```
+<br>
+
+Diagnosis and brain region are very well balanced
+```{r}
+table(datMeta$Disease.status, datMeta$Cortex.area)
+```
+<br>
+
+### Filtering
+<br>
+1. Filter genes with start or end position missing
+```{r}
+to_keep = !is.na(datGenes$length)
+datGenes = datGenes[to_keep,]
+datExpr = datExpr[to_keep,]
+#rownames(datGenes) = datGenes$ensembl_gene_id
+
+print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
+```
+<br>
+2. Filter genes with low expression levels
+
+The density distribution doesn't seem to suggest any clearly defined threshold. Selecting 300
+```{r filter_low_expression, warning=FALSE, fig.width=10}
+plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr))
+ggplotly(plot_data %>% ggplot(aes(x=mean_expression)) + 
+         geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) + 
+         geom_vline(xintercept=300, color='gray') + scale_x_log10() + 
+         ggtitle('gene Mean Expression distribution') + theme_minimal())
+
+to_keep = rowMeans(datExpr)>300
+datGenes = datGenes[to_keep,]
+datExpr = datExpr[to_keep,]
+
+print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
+```
+<br>
+
+3. Filter outlier samples
+
+Using node connectivity as a distance measure, normalising it and filtering out genes farther away than 2 standard deviations from the left (lower connectivity than average, not higher)
+
+- Using $s_{ij}=|bw(i,j)|$ to define connectivity between genes.
+
+- Filtering 4 autism samples
+
+```{r outlier_samples, warning=FALSE}
+absadj = datExpr %>% bicor %>% abs
+netsummary = fundamentalNetworkConcepts(absadj)
+ku = netsummary$Connectivity
+z.ku = (ku-mean(ku))/sqrt(var(ku))
+
+plot_data = data.frame('ID'=rownames(datMeta), 'sample'=1:length(z.ku), 'distance'=z.ku, 'Region'=datMeta$Cortex.area, 'Diagnosis'=datMeta$Disease.status)
+ggplotly(plot_data %>% ggplot(aes(sample, distance, color=Diagnosis)) + geom_point() + geom_hline(yintercept=-2, color='gray') + theme_minimal())
+
+print(paste0('Outlier samples: ', paste(as.character(plot_data$ID[plot_data$distance< -2]), collapse=', ')))
+```
+
+```{r}
+to_keep = abs(z.ku)<2
+datMeta = datMeta[to_keep,]
+datExpr = datExpr[,to_keep]
+
+print(paste0('Removed ', sum(!to_keep), ' samples, ', sum(to_keep), ' remaining'))
+
+rm(absadj, netsummary, ku, z.ku, plot_data, to_keep)
+```
+
+
+```{r}
+print(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' genes and ', ncol(datExpr), ' samples'))
+```
+<br><br>
+
+### Normalisation
+```{r normalisation}
+# Transform Signal to Ratio
+#row_mean = apply(datExpr, 1, mean)
+#ratio = (datExpr)/(row_mean+1)
+#exprs(LumiBatch_v) = as.matrix(ratio[,colnames(ratio) %in% colnames(datExpr)])
+#exprs = as.matrix(ratio[,colnames(ratio) %in% colnames(datExpr)])
+#LumiBatch_v = ExpressionSet(assayData = exprs)
+
+LumiBatch_v = ExpressionSet(assayData = datExpr)
+rownames(datMeta) = datMeta$chip_array
+pData(LumiBatch_v) = datMeta
+
+# Variance Stabilisation
+LumiBatch_v = lumiT(LumiBatch_v, method = 'log2', ifPlot = TRUE)
+
+# Normalisation
+LumiBatch_v = lumiN(LumiBatch_v, method='rsn')
+
+save(LumiBatch_v, file=paste0('../Data/Voineagu/LumiBatch_v_preprocessed.RData'))
+```
+
+```{r}
+# Update datExpr rownames
+rownames(datExpr) = datGenes[rownames(datExpr),]$ensembl_gene_id
+
+datExpr = datExpr[!is.na(rownames(datExpr)),]
+
+datExpr = log2(datExpr)
+```
+
+### DEA
+```{r}
+mod = model.matrix(~Disease.status, data=datMeta)
+corfit = duplicateCorrelation(datExpr, mod, block=datMeta$Brain.Bank.Case.Id)
+fit = eBayes(lmFit(datExpr, mod,block=datMeta$Brain.Bank.Case.Id, 
+                   correlation = corfit$consensus),trend=T)
+DE = topTable(fit,coef=2, number=Inf, sort.by="none")
+
+plot_data = DE %>% left_join(gene_info, by='ID')
+
+ggplotly(plot_data[abs(plot_data$logFC)<1,] %>% ggplot(aes(x=gene.score, y=abs(logFC), fill=gene.score)) + 
+         geom_boxplot() + scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + 
+         theme_minimal() + theme(legend.position='none') + xlab('Gene score') + ylab('abs(lfc)'))
+
+```
+
+### Mean and SD by SFARI score
+**No clear relation between SFARI score and mean expression/SD**. This dataset doesn't seem to have the same problem as Gandal's
+```{r SFARI_score_mean_SD, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=rownames(datExpr), 'MeanExpr'=rowMeans(datExpr), 
+                       'SDExpr'=apply(datExpr,1,sd)) %>% 
+            left_join(gene_info, by='ID')
+
+p1 = ggplotly(plot_data %>% ggplot(aes(gene.score, MeanExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              theme(legend.position='none') + xlab('Gene score') + ylab('mean expression'))
+
+p2 = ggplotly(plot_data %>% ggplot(aes(gene.score, SDExpr, fill=gene.score)) + geom_boxplot() + 
+              scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() +
+              ggtitle('Mean Expression (left) and SD (right) by SFARI score') + 
+              theme(legend.position='none') + xlab('Gene score') + ylab('standard deviation'))
+
+subplot(p1, p2, nrows=1)
+
+rm(plot_data, p1, p2)
+```
+<br><br>
+
+Data seems to be close to homoscedastic
+```{r, fig.width=10}
+plot_data = data.frame('ID'=rownames(datExpr), 'Mean'=rowMeans(datExpr), 'SD'=apply(datExpr,1,sd))
+
+plot_data %>% ggplot(aes(Mean, SD)) + geom_point(color='#0099cc', alpha=0.1) + 
+  geom_smooth(method='lm', color='gray', size=0.5) + theme_minimal()
+
+rm(plot_data)
+```
+### Batch Correction
+
+No Batch information available in the metadata! 
+<br><br>
+
+
+### Visualisations
+<br>
+
+#### Samples
+**PCA:** There doesn't seem to be a specific pattern related to diagnosis or brain region
+
+*There weren't any patterns in MDS and t-SNE either (MDS was the same as PCA)
+
+```{r pca_samples, warning=FALSE, message=FALSE, fig.width=10}
+pca = datExpr %>% t %>% prcomp
+
+datMeta$ID = datMeta$chip_array
+
+plot_data = data.frame('ID'=colnames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2]) %>% 
+            left_join(datMeta, by='ID') %>% 
+            dplyr::select('PC1','PC2','AGE','age_group','SEX','Disease.status', 'Cortex.area')
+
+p1 = plot_data %>% ggplot(aes(PC1, PC2, color=Disease.status)) + geom_point() + theme_minimal() + 
+  ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+p2 = plot_data %>% ggplot(aes(PC1, PC2, color=Cortex.area)) + geom_point() + theme_minimal() + ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) + 
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+grid.arrange(p1, p2, nrow=1)
+
+rm(pca, plot_data)
+```
+<br>
+
+#### Genes
+
+- First Principal Component explains 96.6% of the total variance
+
+- There's a really strong correlation between the mean expression of a gene and the 1st principal component
+
+```{r pca_genes, warning=FALSE, message=FALSE}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame( 'PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'MeanExpr'=rowMeans(datExpr))
+
+plot_data %>% ggplot(aes(PC1, PC2, color=MeanExpr)) + geom_point(alpha=0.5) + theme_minimal() + 
+              scale_color_viridis() + ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+rm(pca, plot_data)
+```
+
+<br><br>
+---
+
+#### Save preprocessed dataset
+```{r save_preprocessed_dataset}
+save(datExpr, datMeta, datGenes, file='./../Data/Voineagu/preprocessed_data.RData')
+#load('./../Data/Voineagu/preprocessed_data.RData')
+```
+<br>
+
+---
+
+#### Session info
+```{r session_info}
+sessionInfo()
+```
+<br><br>
