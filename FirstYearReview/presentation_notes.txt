@@ -1,0 +1,116 @@
+
+#################################################################################################################################
+
+SLIDE 1: OBJECTIVE
+The objective of this project is to study profiles of gene expression in the brain, analysing the relevance of expression patterns to autism spectrum disorders, to identify and characterise affected genes or pathways and gain new insights into the biological processes behind the structural and functional foundations of this disorder.
+
+#################################################################################################################################
+
+SLIDE 2: MOST POPULAR METHODS
+This table shows the most popular methodologies I have found to be used to study gene expression. I'm going to focus on the last group, Network Analysis, which I have found is dominated by the WGCNA algorithm.
+
+
+
+SLIDE 3: GRAPH BASED APPROACHES
+The principle behind graph based approaches is that genes with similar expression profiles tend to share functions, which includes associations to similar dissorders, so clustering genes by their co-expression provides a simple method to infer functional concordance between groups of genes.
+
+Based on this, co-expression networks model genes as nodes and edges as a function of their co-expression to create networks that can be analysed with different graph methodologies.
+
+
+
+SLIDE 4: WGCNA
+WGCNA is the most popular method for studying co-expression networks. It consists of a set of steps for constructing the network, then uses hierarchical clustering for module detection and methods such as eigengene correlation or GSEA to relate modules to external traits.
+
+Although the method is quite simple, the branch cutting algorithm they developed gives it a lot more flexibility than traditional hierarchical clustering methods, and I think what is partly responsible for its popularity is the fact that it has a very complete and well documented R package with all the functions needed to perform this analysis as well as wrapper functions that allow you to do the analysis in a very easy way, without having to worry about all the intermediate steps.
+
+But a downside of this is that people have gotten used to using this package as an out-of-the-box tool, not giving much though about overfitting, the robustness of the results obtained, or consider other alternative methodologies.
+
+#################################################################################################################################
+
+SLIDE 5: PPROPOSED APPROACH
+Since the study of genetics and autism is not a new one, there exist several studies that have found genes to be related to the disease, so the general idea of our approach is to incorporate this information into a gene identification methodology because we believe that giving more information to the model about the disorder could improve its performance.
+
+To do this, we propose characterising each gene by a set of features and assigning a label representing its relation to the disorder, and then use this information to train a classification algorithm that will allow us to infer which new genes are likely to be associated to the disease as well
+
+I'm going to talk first about the labels that we are planning on using and then about some classification methods
+
+
+
+SLIDE 6: SFARI GENE SCORE
+The SFARI Gene is a database where information from multiple research studies was analysed by experts in the area and a score was assigned to each gene reflecting the confidence of the relation between the gene and the disorder.
+
+It currently has 1090 genes with scores ranging from 1 to 6, where 1 has the highest confidence and 6 the least
+
+
+
+SLIDE 7: CLASSIFICATION METHODS (PU Learning)
+Using a traditional classification approach we would represent the genes as observations, which we would characterise by a set of features such as topological features extracted from the co-expression network, information about its functionality, or anything we may think could be useful to the model.
+
+After this, a label is assigned to each gene, which in its simplest form could be a binary label indicating if the gene is contained in the SFARI Gene database or not, and a classification model would be trained on these two classes, after which the model would be used on all the genes that are not in the SFARI database, and any genes labelled by the model as positive would be considered to be candidate genes.
+
+Although this method has been used before to find genes related to ASD and good results have been reported, we believe the approach is not the right one, since defining genes that are not in the SFARI database as a class combines genes that are truly unrelated with the disorder as well as genes that ARE related but haven't been discovered yet, introducing noise to the model that could damage its performance.
+
+As an alternative of this, PU Learning follows a similar formulation than this original approach, but with the difference that only one of the classes contains labelled examples and all the elements of the other class remain unlabelled (this is where the name PU - Positive/Unlabelled name comes from), and the objective in this problems is to infer the behaviour that characterises the positive class so the algorithm is able to explore the pool of unlabelled observations and select observations that could be previously unidentified Positives.
+
+We believe this formulation fits our problem in a more natural way and could give better results than the traditional approach.
+
+
+
+SLIDE 8: CLASSIFICATION METHODS (Ordinal regression)
+Another characteristic of the traditional classification approach is that all classes are considered to be independent from each other, and since the scores in the SFARI Genes follow a hierarchy, it would be benefitial to use a model that acknowledges that.
+
+Ordinal regression is the middle point between a classification method and a linear regression, since it assigns each observations a class but these classes follow a specific order.
+
+
+
+SLIDE 9: NODE CLASSIFICATION IN NETWORKS
+The two previous approaches have used information extracted from the network, but another approach is to use the original network to train the model, similar to a random walk, which has the benefit of using all the information provided by the network, and not just the parts we thought might be relevant to the model.
+
+
+Those are the three main methodologies we want to explore and ideally we would like to incorporate them into a single model that takes advantage of all of their characteristics.
+
+
+
+SLIDE 10: MULTI-OMICS APPROACH
+Everything so far was been using transcriptomic data, so the last thing we want to do is incorporate other data modalities into the model, such as information from GWAS, protein-protein interaction networks, functional information, eQTL or evolutionary features in a multi-omics approach that provides a more complete overview of the disorder.
+
+#################################################################################################################################
+
+SLIDE 11: DATASETS
+Looking for dataset options on which to perform this experiments, we decided to use RNA-seq datasets from brain tissue and we found these four datasets to be the better suited:
+
+PEC Capstone Collection is the bigger dataset available, with 130 donors and 298 samples, but it has controlled use, so even though we have already started an application for it, we don't know when or if we are going to get it.
+
+In the meantime, we have been using the Gandal dataset, which contains 88 samples from 41 donors, and two other datasets we think may also come in useful are Gupta, which has 72 donors but, as the PEC Capstone Collection, the raw counts have a controlled use and only the normalised version of the data is available, and the Liu dataset, which weirdly enough contains autism and control samples but the control samples belong to chimpanzees, but it may still be useful as a secondary source in case we want to corroborate any patterns found in the other datasets.
+
+
+
+SLIDE 12: PREPROCESSING PIPELINE
+After this, we put together a preprocessing pipeline focusing mainly in filtering, normalisation, batch correction and differential expression analysis, to get an initial idea of any patterns related to ASD that may be in the data and in the following slies I'm going to show you some things in the data that I think are interesting or that were unexpected.
+
+
+
+SLIDE 13: SOME VISUALISATIONS (1/3)
+On these plots each point is a gene which is characterised by its level of expression in all of the samples, and if we colour the genes by their mean level of expression, we can see that both methods capture this as the main characterisation of the genes, explaining almost 99% of the variance in the 1st principal component of the PCA.
+
+
+
+SLIDE 14: SOME VISUALISATIONS (2/3)
+These plots now represent the samples, each characterised by their gene expression, and we can see the big impact batch correction (using sva) has on the samples, separating them almost perfectly just with the first principal component.
+
+
+
+SLIDE 15: SOME VISUALISATIONS (3/3)
+This plot is similar to the first one, but on this one, I filtered out the genes that were not found to be differentially expressed, forming two clouds of points, and then colouree the remaining genes by their lfc, so we can see that one of the clouds corresponds to overexpressed genes and the other one to underexpressed genes, and that the second principal component seems to be important in separating these two patterns, as it can be seen in the distribution plot on the right.
+
+
+
+SLIDE 16: SFARI GENE SCORE
+After filtering the genes that were not differentially expressed, we wanted to see the percentage of genes remaining when grouping them by SFARI score and we found that the higher the SFARI score, the lower the percentage of DE genes, which seemed counterintuitive, since they are supposed to contain the genes with the highest certainty of relation to the disorder.
+
+We also found that there was a strong correlation with the lfc and the SFARI score, with the higher SFARI scores having a lower fold change, which we believe it's due to the fact that there seems to be a relation between the SFARI scores and the mean level of expression of the genes, with higher scores having higher mean levels of expression, which, because of the intensity specific bias of the lfc, can create false negatives in genes with high levels of expression.
+
+Even with this explanation, we still don't know why the SFARI Gene score has this relation with the mean expression of the genes, but we need to be aware of this when creating our models.
+
+#################################################################################################################################
+

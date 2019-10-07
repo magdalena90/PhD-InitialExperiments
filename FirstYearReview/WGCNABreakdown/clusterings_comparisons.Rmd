@@ -146,7 +146,7 @@ dend_colors = two_class_clusterings %>% arrange(match(rownames(datExpr), labels(
               mutate('Neuronal'=ifelse(labels(dend) %in% GO_neuronal$ID, '#cc3399', 'gray'),
                      '----'='white','-----'='white','------'='white','-------'='white') %>%
               dplyr::select(euc, cor, bicor, `----`, S, S_sft, TOM, `-----`, comp_linkage, avg_linkage,
-                            `------`, dynamic_hybrid, dynamic_tree, `-------`, Neuronal)
+                            `------`, fixed_height_tree, dynamic_hybrid, dynamic_tree, `-------`, Neuronal)
 
 par(mar=c(12,5,1,1)) # for saving the image
 dend %>% as.dendrogram(hang=0) %>% set('labels', rep('', nrow(datExpr))) %>% plot(ylim=c(min(dend$height),1))

@@ -267,7 +267,8 @@ rownames(cluster_sim) = colnames(cluster_sim)
 cluster_sim = cluster_sim %>% as.matrix %>% round(2)
 heatmap.2(x = cluster_sim, Rowv = FALSE, Colv = FALSE, dendrogram = 'none', 
           cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
-          cexRow = 1, cexCol = 1, margins = c(7,7))
+          cexRow = 1, cexCol = 1, margins = c(7,7), colsep = 6, rowsep = 6, sepwidth = c(0.1,0.15),
+          ColSideColors=c('#006699','#006699','#006699','#006699','#006699','#006699','#cc0066','#cc0066','#cc0066','#cc0066','#cc0066'))
  
 rm(i, j, cluster1, cluster2, clusters_plus_phenotype, cluster_sim)
 ```

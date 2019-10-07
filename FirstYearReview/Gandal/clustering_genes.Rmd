@@ -457,7 +457,9 @@ rownames(cluster_sim) = colnames(cluster_sim)
 cluster_sim = cluster_sim %>% as.matrix %>% round(2)
 heatmap.2(x = cluster_sim, Rowv = FALSE, Colv = FALSE, dendrogram = 'none', 
           cellnote = cluster_sim, notecol = 'black', trace = 'none', key = FALSE, 
-          cexRow = 1, cexCol = 1, margins = c(7,7))
+          cexRow = 1, cexCol = 1, margins = c(7,7), colsep = 3, rowsep = 3, sepwidth = c(0.1,0.15),
+          ColSideColors=c('#cc0066','#cc0066','#cc0066',
+                          '#006699','#006699','#006699','#006699','#006699','#006699','#006699','#006699','#006699'))
 
 rm(i, j, cluster1, cluster2, cluster_sim)
 ```
@@ -511,9 +513,9 @@ if(file.exists(clusterings_file)){
   if(!all(rownames(df) == rownames(datExpr))) stop('Gene ordering does not match the one in clusterings.csv!')
   
   for(clustering in names(clusterings)){
-    df = df %>% mutate(!!clustering := as.factor(sub(0, NA, clusterings[[clustering]])))
-    rownames(df) = rownames(datExpr)
+    df[clustering] = as.factor(sub(0, NA, clusterings[[clustering]]))
   }
+  rownames(df) = rownames(datExpr)
   
 } else {
   

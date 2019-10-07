@@ -6,7 +6,7 @@ output:
 ---
 
 ```{r load_packages, echo=TRUE, include=FALSE}
-#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/R_Markdowns')
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/Gandal/R_Markdowns')
 
 library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
 library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(GGally)
