@@ -1,0 +1,252 @@
+---
+title: 'GO Enrichment Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/Gandal/R_Markdowns')
+
+library(tidyverse) ; library(plotly)
+library(biomaRt)
+library(topGO) ; library(GO.db) ; library(org.Mm.eg.db)
+library(xtable)
+```
+
+Load file with all the cluster memberships from the different methods explored
+```{r}
+clusterings = read.csv('./../Data/Gandal/clusterings.csv', row.names=1)
+clusterings$Manual[is.na(clusterings$Manual)] = 0
+```
+
+### Exploratory analysis
+```{r, fig.width=10}
+basic_clusterings = clusterings %>% dplyr::select(dynamic_tree, dynamic_hybrid, cor, euc, comp_linkage, S, S_sft, 
+                                                  fixed_height_tree, KMeans, HC, CC, ICA, WGCNA, GMM, Manual,
+                                                  Manual_mean, Manual_sd)
+
+plot_data = data.frame('Method'=factor(colnames(basic_clusterings), levels = colnames(basic_clusterings)), 
+                       'NAs'=apply(basic_clusterings,2,function(x) mean(is.na(x))),
+                       'N_clusters'=apply(basic_clusterings,2,function(x) length(unique(x))),
+                       'Experiment'=c(rep('WGCNA breakdown',8), rep('Other methods',9)))
+
+ggplotly(plot_data %>% ggplot(aes(Method, NAs, fill=Experiment)) + geom_bar(stat='identity') + theme_minimal() + 
+           theme(axis.text.x = element_text(angle=90))) %>% layout(legend = list(orientation = "h", y=1.1))
+```
+
+```{r, fig.width=10}
+ggplotly(plot_data %>% ggplot(aes(Method, N_clusters, fill=Experiment)) + geom_bar(stat='identity') + theme_minimal() + 
+           theme(axis.text.x = element_text(angle=90))) %>% layout(legend = list(orientation = "h", y=1.1))
+```
+
+```{r, fig.width=10}
+plot_data = data.frame('Method' = factor(colnames(basic_clusterings), levels = colnames(basic_clusterings)),
+                       'N_clusters'=apply(basic_clusterings,2,function(x) length(unique(x))),
+                       'cluster_size_mean'=rep(0,ncol(basic_clusterings)),
+                       'cluster_size_sd'=rep(0,ncol(basic_clusterings)))
+
+for(method in plot_data$Method){
+  df = basic_clusterings %>% filter(complete.cases(.)) %>% group_by_at(method) %>% tally
+  plot_data[method,3:4] = c(mean(df$n), sd(df$n))
+}
+
+ggplotly(plot_data %>% ggplot(aes(cluster_size_mean, cluster_size_sd, color=N_clusters, id=Method)) + 
+         geom_point() + theme_minimal() + xlab('Mean cluster size') + ylab('Cluster size SD') + labs(color = 'N Clusters'))
+
+rm(method, df, plot_data)
+```
+
+
+## GO Enrichment Analysis following [this](https://datacatz.wordpress.com/2018/01/19/gene-set-enrichment-analysis-with-topgo-part-1/)
+
+### Perform the Enrichment Analysis
+
+**Note:** This code is very inefficient because it makes the search twice (once here and once in the second section). If this needs to be run again, the code should be modified to do both in a single loop
+```{r}
+
+if(!file.exists('./../Data/Gandal/summary_GO_DE_clusters.RData')){
+
+  # Create map between gene IDs and GO IDs
+  getinfo = c('ensembl_gene_id','external_gene_id','go_id')
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL', dataset='hsapiens_gene_ensembl', host='feb2014.archive.ensembl.org')
+  ensembl2GO = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(basic_clusterings), mart=mart)
+  ensembl2GO = ensembl2GO[ensembl2GO$go_id!='',]
+  
+  ensembl2gene = unique(ensembl2GO[,-3])[,2]
+  names(ensembl2gene) = unique(ensembl2GO[,-3])[,1]
+  
+  
+  EA_by_method = list()
+  
+  for(method in colnames(basic_clusterings)){
+    modules = basic_clusterings[method]
+    signif_terms_in_mods = list()
+    
+    for(module in unique(modules[!is.na(modules)])){
+      
+      # Create topGO object
+      geneList = as.numeric(modules==module)
+      geneList[is.na(geneList)] = 0
+      names(geneList) = ensembl2gene[rownames(basic_clusterings)]
+      
+      GOdata = new('topGOdata', ontology='BP', allGenes=geneList, geneSel=function(mod){return(mod==1)},
+                   nodeSize=1, annot=annFUN.gene2GO, gene2GO=unstack(ensembl2GO[,c('go_id','external_gene_id')]))
+      
+      # Perform statistical test
+      weight_test = runTest(GOdata, algorithm = 'weight01', statistic = 'fisher')
+      res = GenTable(GOdata, weightFisher = weight_test, orderBy = 'weightFisher',
+                     ranksOf = 'weightFisher', topNodes = length(unique(ensembl2GO$go_id))) %>% 
+            mutate(BH_corr = p.adjust(weightFisher, 'BH', n=length(unique(ensembl2GO$go_id))))
+      
+      signif_terms_in_mods[as.character(module)] = sum(res$BH_corr<0.05)
+    
+    }
+    
+    EA_by_method[method] = signif_terms_in_mods
+  }
+  
+  save(EA_by_method, file='./../Data/Gandal/summary_GO_DE_clusters.RData')
+
+} else {
+  load('./../Data/Gandal/summary_GO_DE_clusters.RData')
+  EA_by_method_summary = EA_by_method
+}
+
+rm(EA_by_method)
+```
+
+### Get proportion of enriched modules by method
+
+Getting the number of modules for each method that have at least one significant relation with a GO term (losing information about the number of terms that were found to be significant)
+
+- The dynamic_tree algorithm has a larger proportion of biologically enriched modules than dynamic_hybrid
+
+- Biweight midocrrelation has a larger proportion of enriched modules than correlation
+
+```{r}
+EA_results = data.frame('Method' = names(EA_by_method_summary), 
+                        'n' = apply(basic_clusterings, 2, function(x) length(unique(x))),
+                        'n_enriched'=sapply(EA_by_method_summary, function(x) sum(x>0))) %>%
+                        mutate('prop_enriched'=n_enriched/n) %>% arrange(desc(prop_enriched))
+
+EA_results
+```
+
+### Analyse best methods
+
+```{r}
+if(!file.exists('./../Data/Gandal/GO_DE_clusters.RData')){
+
+  # Create map between gene IDs and GO IDs
+  getinfo = c('ensembl_gene_id','external_gene_id','go_id')
+  mart = useMart(biomart='ENSEMBL_MART_ENSEMBL', dataset='hsapiens_gene_ensembl', host='feb2014.archive.ensembl.org')
+  ensembl2GO = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(basic_clusterings), mart=mart)
+  ensembl2GO = ensembl2GO[ensembl2GO$go_id!='',]
+  
+  ensembl2gene = unique(ensembl2GO[,-3])[,2]
+  names(ensembl2gene) = unique(ensembl2GO[,-3])[,1]
+  
+  
+  EA_by_method = list()
+  
+  for(method in colnames(basic_clusterings)){
+    modules = basic_clusterings[method]
+    signif_terms_in_mods = list()
+    
+    for(module in unique(modules[!is.na(modules)])){
+      
+      # Create topGO object
+      geneList = as.numeric(modules==module)
+      geneList[is.na(geneList)] = 0
+      names(geneList) = ensembl2gene[rownames(basic_clusterings)]
+      
+      GOdata = new('topGOdata', ontology='BP', allGenes=geneList, geneSel=function(mod){return(mod==1)},
+                   nodeSize=1, annot=annFUN.gene2GO, gene2GO=unstack(ensembl2GO[,c(3,2)]))
+      
+      # Perform statistical test
+      weight_test = runTest(GOdata, algorithm = 'weight01', statistic = 'fisher')
+      res = GenTable(GOdata, weightFisher = weight_test, orderBy = 'weightFisher',
+                     ranksOf = 'weightFisher', topNodes = length(unique(ensembl2GO$go_id))) %>% 
+        mutate(BH_corr = p.adjust(weightFisher, 'BH', n=length(unique(ensembl2GO$go_id))))
+      
+      #signif_terms_in_mods[as.character(module)] = sum(res$BH_corr<0.05)
+      
+      if(sum(res$BH_corr<0.05)>0){
+        signif_terms_in_mods[[as.character(module)]] = res[res$BH_corr<0.05,]
+      }
+    }
+    
+    EA_by_method[[method]] = signif_terms_in_mods
+  }
+  save(EA_by_method, file='./../Data/Gandal/GO_DE_clusters.RData')
+
+} else {
+  load('./../Data/Gandal/GO_DE_clusters.RData')
+}
+```
+
+#### Manual
+
+```{r print_GO_enriched_terms_Manual, width=20}
+
+cat(paste0(EA_by_method$Manual %>% length, ' Modules are significantly enriched'))
+
+for(i in 1:(EA_by_method$Manual %>% length)){
+  cat(paste0('\n\nGO terms enriched for module ', names(EA_by_method$Manual)[[i]],'\n'))
+  print(EA_by_method$Manual[[i]][,c('GO.ID','Term','BH_corr')])
+}
+
+```
+
+#### WGCNA using euclidean distance
+
+```{r print_GO_enriched_terms_euc}
+
+cat(paste0(EA_by_method$euc %>% length, ' Modules are significantly enriched'))
+
+for(i in 1:(EA_by_method$euc %>% length)){
+  cat(paste0('\n\nGO terms enriched for module ', names(EA_by_method$euc)[[i]],'\n'))
+  print(EA_by_method$euc[[i]][,c('GO.ID','Term','BH_corr')])
+}
+
+```
+
+#### Manual separation + separation by mean
+
+```{r print_GO_enriched_terms_Manual_mean}
+
+cat(paste0(EA_by_method$Manual_mean %>% length, ' Modules are significantly enriched'))
+
+for(i in 1:(EA_by_method$Manual_mean %>% length)){
+  cat(paste0('\n\nGO terms enriched for module ', names(EA_by_method$Manual_mean)[[i]],'\n'))
+  print(EA_by_method$Manual_mean[[i]][,c('GO.ID','Term','BH_corr')])
+}
+
+```
+
+#### WGCNA with Dynamic Tree algorithm
+
+```{r print_GO_enriched_terms_dynamic_tree}
+
+cat(paste0(EA_by_method$dynamic_tree %>% length, ' Modules are significantly enriched'))
+
+for(i in 1:(EA_by_method$dynamic_tree %>% length)){
+  cat(paste0('\n\nGO terms enriched for module ', names(EA_by_method$dynamic_tree)[[i]],'\n'))
+  print(EA_by_method$dynamic_tree[[i]][,c('GO.ID','Term','BH_corr')])
+}
+
+```
+
+#### Out-of-the-box WGCNA
+
+```{r}
+
+cat(paste0(EA_by_method$WGCNA %>% length, ' Modules are significantly enriched'))
+
+for(i in 1:(EA_by_method$WGCNA %>% length)){
+  cat(paste0('\n\nGO terms enriched for module ', names(EA_by_method$WGCNA)[[i]],'\n'))
+  print(EA_by_method$WGCNA[[i]][,c('GO.ID','Term','BH_corr')])
+}
+
+```
