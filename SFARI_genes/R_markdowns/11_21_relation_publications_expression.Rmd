@@ -1,8 +1,91 @@
 ---
-title: 'Relation between Level of Expression and Number of Publications'
+title: 'Publications vs Mean Level of Expression'
 output:
   html_document:
     code_folding: 'hide'
 ---
 
+```{r load_packages, warning=FALSE, message=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_Markdowns/')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis)
+library(biomaRt)
+library(knitr)
+
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
+```
+
+Load raw count expression matrix and pubmed counts by gene
+```{r}
+datExpr = read.csv('./../../FirstYearReview/Data/Gandal/RNAseq_ASD_datExpr.csv')
+pubmed_counts = read.csv('./../Data/pubmed_count_by_gene.csv')
+```
+
+Convert ensembl IDs to gene names
+```{r}
+# Get gene names from Ensembl IDs
+getinfo = c('ensembl_gene_id','external_gene_id','gene_biotype')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',  dataset='hsapiens_gene_ensembl', 
+               host='feb2014.archive.ensembl.org')
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=datExpr$X, mart=mart)
+datGenes = datGenes[match(datExpr$X, datGenes$ensembl_gene_id),]
+
+rm(getinfo, mart)
+```
+
+```{r warning=FALSE}
+datGenes = datGenes %>% mutate('meanExpr' = rowMeans(datExpr[,-1])) %>% 
+           left_join(pubmed_counts, by=c('external_gene_id'='Gene')) %>% na.omit
+```
+*Perhaps later I should remove the entries with gene name 5s_rRNA
+
+#### Gene Expression
+
+Very heavy right tail
+```{r mean_expr_distr}
+ggplotly(datGenes %>% ggplot(aes(meanExpr+1)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
+         scale_x_log10() + theme_minimal())
+```
+
+#### Number of Publications
+
+Very heavy right tail too
+```{r publications_distr}
+summary(datGenes$Count)
+
+datGenes %>% arrange(desc(Count)) %>% distinct(external_gene_id, .keep_all=TRUE) %>% 
+             head(20) %>% kable(caption='Top 20 genes by number of publications')
+
+ggplotly(datGenes %>% ggplot(aes(Count+1)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
+         scale_x_log10() + theme_minimal())
+```
+
+#### Relation between publications and mean expression
+
+There is a positive relation between these two variables and the correlation is quite high **but** only when transforming to logarithmic scale the variables
+```{r publications_vs_expression, message=FALSE}
+datGenes %>% ggplot(aes(meanExpr+1, Count+1)) + geom_point(color='#0099cc', alpha=0.1) +
+             geom_smooth(color='gray', alpha=0.3) + scale_x_log10() + scale_y_log10() + 
+             ggtitle(paste0('Cor=(' ,cor(log10(datGenes$meanExpr+1), log10(datGenes$Count+1)),')')) + theme_minimal()
+```
+
+Differentiating protein coding genes from the rest, the correlation decreases when separating the genes (I would have expected the opposite)
+
+*The red stripes on the plot correspond to non coding genes that have many ensembl IDs, like Y_RNA, snoU13, U3, or SNORD112
+```{r, message=FALSE}
+datGenes %>% mutate(protein_coding = gene_biotype=='protein_coding') %>% 
+             ggplot(aes(meanExpr+1, Count+1, color=protein_coding)) + 
+             geom_point(alpha=0.1) + geom_smooth() + 
+             scale_x_log10() + scale_y_log10() + 
+             ggtitle(paste0('CorPC=(',
+                            cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype=='protein_coding'],
+                                log10(datGenes$Count+1)[datGenes$gene_biotype=='protein_coding']),'), ',
+                            'CorNPC=(',
+                            cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype!='protein_coding'],
+                                log10(datGenes$Count+1)[datGenes$gene_biotype!='protein_coding']),')')) +
+             theme_minimal()
+```
 
