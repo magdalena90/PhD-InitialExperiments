@@ -1,0 +1,198 @@
+---
+title: 'Data Preprocessing'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, echo=TRUE, include=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/FirstYearReview/R_Markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(GGally) ; library(ggExtra)
+library(biomaRt) ; library(DESeq2) ; library(sva) ; library(WGCNA) ; library(vsn)
+library(dendextend)
+```
+
+---
+
+## Raw data
+
+Dataset downloaded from [Arkinglab website](http://www.arkinglab.org/resources/) in the *Transcriptome analysis reveals dysregulation of innate immune response genes and neuronal activity-dependent genes in autism* section.
+
+### Load and annotate data
+```{r load_and_annotate_data}
+
+# Load csvs
+datExpr = read.delim('./../Data/datExpr.csv')
+datMeta = read.delim('./../Data/datPheno.csv')
+
+# Create dataset with gene information
+datGenes = data.frame('Ensembl_ID' = substr(datExpr$Gene, 1, 15), 
+                      'gene_name' = substring(datExpr$Gene, 17))
+rownames(datExpr) = datGenes$Ensembl_ID
+datExpr$Gene = NULL
+
+
+### CLEAN METADATA DATA FRAME
+keep = c('ID', 'case', 'sampleid', 'brainregion', 'positiononplate', 'Gender', 'Age', 'SiteHM', 'RIN', 'PMI', 'Dx')
+datMeta = datMeta %>% dplyr::select(keep)
+datMeta$brainregion = substr(datMeta$ID, 1, 4)
+datMeta = datMeta %>% mutate(brain_lobe = ifelse(brainregion=='ba19', 'Occipital', 'Frontal'),
+                             Diagnosis = ifelse(Dx=='Autism', 'ASD', 'CTL'))
+
+# Convert Diagnosis variable to factor
+datMeta$Diagnosis = factor(datMeta$Diagnosis, levels=c('CTL','ASD'))
+
+# sampleid is actually subject ID
+datMeta = datMeta %>% dplyr::rename(Subject_ID = sampleid)
+
+rm(keep)
+```
+
+### Check sample composition
+
+Data description taken from the paper [Transcriptome analysis reveals dysregulation of innate immune response genes and neuronal activity-dependent genes in autism](https://www.nature.com/articles/ncomms6748): 
+
+Transcriptomes from 104 human brain cortical tissue samples were resolved using next-generation RNA sequencing technology at single-gene resolution and through co-expressing gene clusters or modules. Multiple cortical tissues corresponding to Brodmann Area 19 (BA19), Brodmann Area 10 (BA10) and Brodmann Area 44 (BA44) were sequenced in 62, 14 and 28 samples, respectively, resulting in a total of 57 (40 unique individuals) control and 47 (32 unique individuals) autism samples.
+
+*Note:* They analysed all of the regions together
+
+Brain tissue: Frozen brain samples were acquired through the Autism Tissue Program, with samples originating from two different sites: the Harvard Brain Tissue Resource Center and the NICHD Brain and Tissue Bank at the University of Maryland ( Gandal's data were obtained also from the Autism Tissue Program, specifically from the Harvard Brain Bank)
+
+Sequenced using Illumina’s HiSeq 2000 (Gandal used Illumina HiSeq 2500)
+
+
+```{r}
+print(paste0('Dataset includes ', nrow(datExpr), ' genes from ', ncol(datExpr), ' samples belonging to ', length(unique(datMeta$Subject_ID)), ' different subjects.'))
+
+```
+
+In the paper they talk about an original number of 110 samples and dropping 6 because of low gene coverage, resulting in 104 samples (which are the ones that are included in datMeta), but the expression dataset has 120 samples.
+
+```{r}
+no_metadata_samples = colnames(datExpr)[! colnames(datExpr) %in% datMeta$ID]
+no_metadata_subjects = unique(substring(no_metadata_samples, 6))
+
+cat(paste0('Samples without metadata:  ', paste(no_metadata_samples, collapse=', '), '\n\n'))
+
+cat(paste0('Samples without metadata but with subject ID in datMeta: ', 
+             paste(no_metadata_subjects[no_metadata_subjects %in% datMeta$Subject_ID], collapse=', ')))
+```
+
+<br>
+
+**Diagnosis distribution:** There are more CTL samples than controls
+```{r}
+cat('By Sample:\n')
+table(datMeta$Diagnosis)
+
+cat('\n\nBy Subject:\n')
+table(datMeta$Diagnosis[!duplicated(datMeta$Subject_ID)])
+```
+<br>
+
+**Brain region distribution:** The Occipital lobe has mas samples than the Frontal lobe, even though we am combining two brain regions in the Frontal Lobe
+```{r}
+table(datMeta$brainregion)
+table(datMeta$brain_lobe)
+```
+<br>
+
+Most of the Control samples (66%) are from the Occipital lobe, the Autism samples are balanced. *This may cause problems because Ctl and Occipital are related*
+```{r}
+table(datMeta$Diagnosis, datMeta$brain_lobe)
+
+cat(paste0('\n',round(100*sum(datMeta$Diagnosis=='CTL' & datMeta$brain_lobe=='Occipital')/sum(datMeta$brain_lobe=='Occipital')),
+           '% of the Control samples are from the Occipital lobe\n'))
+cat(paste0(round(100*sum(datMeta$Diagnosis=='ASD' & datMeta$brain_lobe=='Occipital')/sum(datMeta$brain_lobe=='Occipital')),
+           '% of the Autism samples are from the Occipital lobe'))
+```
+<br>
+
+**Gender distribution:** There are almost twice as many Male samples than Female ones
+```{r}
+table(datMeta$Gender)
+```
+<br>
+
+There is an imbalance between gender and diagnosis with more males in the control group than in the autism group
+```{r}
+table(datMeta$Diagnosis, datMeta$Gender)
+
+cat(paste0('\n',round(100*sum(datMeta$Diagnosis=='CTL' & datMeta$Gender=='M')/sum(datMeta$Diagnosis=='CTL')),
+           '% of the Control samples are Male\n'))
+cat(paste0(round(100*sum(datMeta$Diagnosis=='ASD' & datMeta$Gender=='M')/sum(datMeta$Diagnosis=='ASD')),
+           '% of the Autism samples are Male'))
+```
+<br>
+
+
+**Age distribution:** Subjects between 2 and 82 years old with a mean close to 20
+
+Control samples are less evenly distributed across ages than Autism samples
+```{r}
+summary(datMeta$Age)
+
+datMeta_by_subject = datMeta %>% filter(!duplicated(Subject_ID))
+datMeta_by_subject %>% ggplot(aes(Age)) +
+                       geom_density(alpha=0.5, aes(group=Diagnosis, fill=Diagnosis), color='transparent') +
+                       geom_density(alpha=0.5, fill='gray', color='transparent') +
+                       theme_minimal()
+```
+<br>
+
+### Annotate genes with BioMart information
+
+Cannot find 1580 ids
+```{r annotate_genes, echo=TRUE, include=FALSE}
+
+datGenes_original = datGenes
+
+getinfo = c('ensembl_gene_id','external_gene_id','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gc_content')
+
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='feb2014.archive.ensembl.org')
+
+# Getting gene info using Ensembl IDs
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+datGenes = datGenes[match(rownames(datExpr), datGenes$ensembl_gene_id),]
+datGenes$length = datGenes$end_position-datGenes$start_position
+
+missing_genes = datGenes_original$gene_name[is.na(datGenes$ensembl_gene_id)]
+
+# 47 SFARI genes lost:
+# 1  2  3  4  5 
+# 2 14  5 24  2 
+
+# available archives: https://www.ensembl.org/info/website/archives/index.html
+# may2012 loses 6402
+
+
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl',
+               host='oct2014.archive.ensembl.org')
+
+# Getting gene info using Ensembl IDs
+getinfo = c('ensembl_gene_id','external_gene_name')
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+
+
+
+
+# using host = 'grch37.ensembl.org' or not specifying the host leaes 3053 genes out
+getinfo = c('ensembl_gene_id','external_gene_name','chromosome_name','start_position',
+            'end_position','strand','band','gene_biotype','percentage_gene_gc_content')
+mart = useMart(biomart='ENSEMBL_MART_ENSEMBL',
+               dataset='hsapiens_gene_ensembl')
+
+datGenes = getBM(attributes=getinfo, filters=c('ensembl_gene_id'), values=rownames(datExpr), mart=mart)
+
+
+
+
+
+rm(getinfo, mart)
+```
