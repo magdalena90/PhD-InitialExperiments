@@ -351,11 +351,11 @@ print(paste0(length(unique(SFARI_genes$`gene-symbol`[SFARI_genes$ID %in% rowname
 print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
 ```
 
-$\qquad$ 2.2 Removing genes with a mean expression lower than 1.5
+$\qquad$ 2.2 Removing genes with a mean expression lower than 10 (it's quite high compared to the threshold of 1.7 used in Gandal's dataset)
 
 - Chose this threshold based on the mean vs sd plot from the Normalisation step.
 ```{r, warning=FALSE, fig.width=10}
-threshold = 1.5
+threshold = 10
 plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr))
 
 ggplotly(plot_data %>% ggplot(aes(x=mean_expression)) + 
@@ -378,7 +378,7 @@ Filter out outliers: Using node connectivity as a distance measure, normalising 
 
 - Gandal uses the formula $s_{ij}=\frac{1+bw(i,j)}{2}$ to convert all the weights to positive values, but I used $s_{ij}=|bw(i,j)|$ instead because I think it makes more sense. In the end it doesn't matter because they select as outliers the same six samples
 
-- Outliers come from the Harvard site, are all ASD samples and belong to relativelty young subjects, but it could be just a coincidence
+- Only 2 outliers
 
 ```{r, warning=FALSE}
 absadj = datExpr %>% bicor %>% abs
@@ -411,8 +411,6 @@ cat(paste0('After filtering, the dataset consists of ', nrow(datExpr), ' genes a
 <br><br>
 
 ---
-
-## Batch Effects
 
 ## Batch Effects
 

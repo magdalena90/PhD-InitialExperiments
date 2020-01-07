@@ -1,0 +1,489 @@
+---
+title: 'Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+### Comparison with Gandal dataset
+
+- The datasets are quite similar in general
+
+- Autism samples have higher levels of expression
+
+- Overexpressed genes have a higher level of expression than under expressed genes (again, I think it's weird)
+
+- DE genes separate into two clouds based on the sign of their lfc
+
+- This dataset has five times less DE genes than Gandal, with only 5% of its genes being DE
+
+- There don't seem to be underlying distributions when plotting genes by mean expression or by standard deviation anymore
+
+<br><br>
+
+***
+
+```{r load_packages, echo=TRUE, warning=FALSE, message=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/Gupta/R_Markdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(plotlyutils)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(GGally)
+library(Rtsne)
+library(ClusterR)
+library(DESeq2)
+```
+
+Load preprocessed dataset (preprocessing code in 19_11_14_data_preprocessing.Rmd)
+```{r load_dataset, echo=TRUE, message=FALSE, warning=FALSE}
+# Gandal dataset
+load('./../Data/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+# Update DE_info with Neuronal information
+DE_info = DE_info %>% mutate('ID'=rownames(.)) %>% left_join(GO_neuronal, by='ID') %>%
+  mutate(Neuronal=ifelse(is.na(Neuronal), 0, Neuronal)) %>%
+  mutate(significant=padj<0.05 & !is.na(padj))
+```
+<br>
+
+### All samples together
+
+- The distributions seem pretty homogeneous
+
+```{r, fig.width=10}
+plot_data = data.frame('ID'=rownames(datExpr), 'Mean'=rowMeans(datExpr))
+p1 = ggplotly(plot_data %>% ggplot(aes(Mean)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
+              scale_x_log10() + theme_minimal())
+
+plot_data = data.frame('ID'=colnames(datExpr), 'Mean'=colMeans(datExpr))
+p2 = ggplotly(plot_data %>% ggplot(aes(Mean)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
+              theme_minimal() + ggtitle('Mean expression density by gene (left) and by Sample (right)'))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2, plot_data)
+```
+
+- Genes with a neuronal function have a larger mean than genes without it, although the difference is not big
+
+- Autism samples tend to have a higher mean expression than the control group, but, opposite to the Gandal dataset, this time they have a lower spread
+
+```{r GO_annotations, warning=FALSE, fig.width=10}
+plot_data = data.frame('ID'=rownames(datExpr), 'Mean'=rowMeans(datExpr)) %>% 
+            left_join(GO_neuronal, by='ID') %>% mutate('Neuronal'=ifelse(is.na(Neuronal),F,T))
+p1 = plot_data %>% ggplot(aes(Mean, color=Neuronal, fill=Neuronal)) + geom_density(alpha=0.3) +
+                   scale_x_log10() + theme_minimal() + theme(legend.position='bottom') + 
+                   ggtitle('Mean expression density by gene')
+
+plot_data = data.frame('ID'=colnames(datExpr), 'Mean'=colMeans(datExpr)) %>% 
+            left_join(datMeta, by=c('ID'='ID'))
+p2 = plot_data %>% ggplot(aes(Mean, color=Diagnosis, fill=Diagnosis)) + geom_density(alpha=0.3) +
+                   theme_minimal() + theme(legend.position='bottom') + 
+                   ggtitle('Mean expression density by Sample')
+
+grid.arrange(p1, p2, nrow=1)
+
+rm(GO_annotations, plot_data, p1, p2)
+```
+<br>
+
+### ASD vs CTL
+
+In general there doesn't seem to be a lot of variance in mean expression between autism and control samples by gene. 
+<!-- Biggest outliers are ENSG00000173110, ENSG00000234449 and ENSG00000143858. -->
+```{r asd_vs_ctl, warning=FALSE}
+plot_data = data.frame('ID'=rownames(datExpr),
+                       'ASD'=rowMeans(datExpr[,datMeta$Diagnosis=='ASD']),
+                       'CTL'=rowMeans(datExpr[,datMeta$Diagnosis!='ASD']))
+
+plot_data %>% ggplot(aes(ASD,CTL)) + geom_point(alpha=0.1, color='#0099cc') + 
+         geom_abline(color='gray') + ggtitle('Mean expression ASD vs CTL') + theme_minimal()
+```
+
+- There doesn't seem to be a noticeable difference between mean expression by gene between diagnosis groups
+
+- Samples with autism tend to have a narrower dispersion of mean expression with higher values than the control group (as we had already seen above)
+
+```{r, fig.width=10}
+plot_data = rbind(data.frame('Mean'=rowMeans(datExpr[,datMeta$Diagnosis=='ASD']), 'Diagnosis'='ASD'),
+                  data.frame('Mean'=rowMeans(datExpr[,datMeta$Diagnosis!='ASD']), 'Diagnosis'='CTL')) %>%
+            mutate('Diagnosis'=factor(Diagnosis, levels=c('CTL','ASD')))
+p1 = ggplotly(plot_data %>% ggplot(aes(Mean, color=Diagnosis, fill=Diagnosis)) + 
+              geom_density(alpha=0.3) + scale_x_log10() + theme_minimal())
+
+plot_data = rbind(data.frame('Mean'=colMeans(datExpr[,datMeta$Diagnosis=='ASD']), 'Diagnosis'='ASD'),
+                  data.frame('Mean'=colMeans(datExpr[,datMeta$Diagnosis!='ASD']), 'Diagnosis'='CTL')) %>%
+            mutate('Diagnosis'=factor(Diagnosis, levels=c('CTL','ASD')))
+p2 = ggplotly(plot_data %>% ggplot(aes(Mean, color=Diagnosis, fill=Diagnosis)) + 
+              geom_density(alpha=0.3) + theme_minimal() +
+              ggtitle('Mean expression by Gene (left) and by Sample (right) grouped by Diagnosis'))
+
+subplot(p1, p2, nrows=1)
+
+rm(p1, p2, plot_data)
+```
+<br><br>
+
+---
+
+## Visualisations
+<br>
+
+### Samples
+
+#### PCA
+The first principal component seems to separate almost perfectly the two diagnosis
+```{r pca_samples, warning=FALSE, message=FALSE}
+pca = datExpr %>% t %>% prcomp
+
+plot_data = data.frame('ID'=colnames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2]) %>% 
+            left_join(datMeta, by=c('ID'='ID')) %>% 
+            dplyr::select('ID','PC1','PC2','Diagnosis') %>% 
+            mutate('Diagnosis'=factor(Diagnosis, levels=c('CTL','ASD')))
+
+plot_data %>% ggplot(aes(PC1, PC2, color=Diagnosis)) + geom_point() + theme_minimal() + ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+rm(pca, plot_data)
+```
+<br>
+
+
+#### MDS
+
+Looks exactly the same as the PCA visualisation, just inverting both axis
+```{r mds_samples, message=FALSE, warning=FALSE}
+d = datExpr %>% t %>% dist
+fit = cmdscale(d, k=2)
+
+plot_data = data.frame('ID'=colnames(datExpr), 'C1'=fit[,1], 'C2'=fit[,2]) %>%
+            left_join(datMeta, by=c('ID'='ID')) %>% 
+            dplyr::select('C1','C2','Diagnosis') %>%
+            mutate('Diagnosis'=factor(Diagnosis, levels=c('CTL','ASD')))
+
+plot_data %>% ggplot(aes(C1, C2, color=Diagnosis)) + geom_point() + theme_minimal() + ggtitle('MDS')
+
+rm(d, fit, plot_data)
+```
+<br>
+
+#### t-SNE
+
+Higher perplexities seem to capture the difference between diagnosis better, although at the end they seem to be capturing another pattern as well, since the samples seem to be grouped in pairs
+```{r tsne_samples, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+perplexities = c(2,5,10,30)
+ps = list()
+
+for(i in 1:length(perplexities)){
+  set.seed(123)
+  tsne = datExpr %>% t %>% Rtsne(perplexity=perplexities[i])
+  plot_data = data.frame('ID'=colnames(datExpr), 'C1'=tsne$Y[,1], 'C2'=tsne$Y[,2]) %>%
+              left_join(datMeta, by=c('ID'='ID')) %>%
+              dplyr::select('C1','C2','Diagnosis','Subject_ID') %>%
+              mutate('Diagnosis'=factor(Diagnosis, levels=c('CTL','ASD')))
+  ps[[i]] = plot_data %>% ggplot(aes(C1, C2, color=Diagnosis)) + geom_point() + theme_minimal() +
+            ggtitle(paste0('Perplexity=',perplexities[i])) + theme(legend.position='none')
+}
+
+grid.arrange(grobs=ps, nrow=2)
+
+rm(ps, perplexities, tsne, i)
+```
+<br>
+
+In the Gandal dataset, the higher perplexity values managed to capture the subject the samples belonged to, but it doesn't seem to do it with this new dataset
+```{r, warning=FALSE}
+ggplotly(plot_data %>% ggplot(aes(C1, C2, color=Subject_ID)) + geom_point(aes(id=Subject_ID)) + theme_minimal() + 
+         theme(legend.position='none') + ggtitle('t-SNE Perplexity=30 coloured by Subject ID'))
+
+rm(plot_data)
+```
+
+### Genes
+
+#### PCA
+
+- First Principal Component explains over 96% of the total variance (Less than Gandal's)
+
+- There's a really strong correlation between the mean expression of a gene and the 1st principal component
+
+```{r pca_genes, fig.width=10, warning=FALSE, message=FALSE}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame( 'PC1' = pca$x[,1], 'PC2' = pca$x[,2], 'MeanExpr'=rowMeans(datExpr))
+
+plot_data %>% ggplot(aes(PC1, PC2, color=MeanExpr)) + geom_point(alpha=0.3) + theme_minimal() + 
+              scale_color_viridis() + ggtitle('PCA') +
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)'))
+
+rm(pca, plot_data)
+```
+<br>
+
+#### t-SNE
+
+Higher perplexities seem to capture the difference between diagnosis better, although at the end they seem to be capturing another pattern as well, since the samples seem to be grouped in pairs
+```{r tsne_genes, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+perplexities = c(1,2,5,10,50,100)
+ps = list()
+
+for(i in 1:length(perplexities)){
+  tsne = read.csv(paste0('./../Visualisations/tsne_perplexity_',perplexities[i],'.csv'))
+  plot_data = data.frame('C1'=tsne[,1], 'C2'=tsne[,2], 'MeanExpr'=rowMeans(datExpr))
+  ps[[i]] = plot_data %>% ggplot(aes(C1, C2, color=MeanExpr)) + geom_point(alpha=0.5) + theme_minimal() +
+            scale_color_viridis() + ggtitle(paste0('Perplexity=',perplexities[i])) + theme(legend.position='none')
+}
+
+grid.arrange(grobs=ps, nrow=2)
+
+rm(perplexities, ps, tsne, i)
+```
+
+<br>
+
+### Differential Expression Analysis
+
+- Only 747 genes (~5% vs ~26% in Gandal's dataset) are significant using a threshold of 0.05 for the adjusted p-value and a without a log Fold Change threshold (keeping the null hypothesis $H_0: lfc=0$)
+
+- All genes don't have an adjusted p-value (no NAs)
+```{r}
+table(DE_info$padj<0.05, useNA='ifany')
+```
+
+```{r logFC_vs_adjPval, fig.width=10}
+p = DE_info %>% ggplot(aes(log2FoldChange, padj, color=padj<0.05)) + geom_point(alpha=0.2) + 
+    scale_y_sqrt() + xlab('log2 Fold Change') + ylab('Adjusted p-value') + theme_minimal()
+ggExtra::ggMarginal(p, type = 'density', color='gray', fill='gray', size=10)
+
+rm(p)
+```
+
+- There is a clear negative relation between lfc and mean expression, for both differentially expressed and not differentially expressed groups of genes
+```{r logFC_vs_meanExpr, fig.width=10, warning=FALSE}
+plot_data = data.frame('ID'=rownames(datExpr), 'meanExpr'=rowMeans(datExpr)) %>% left_join(DE_info, by='ID') %>%
+            mutate('statisticallySignificant'=padj<0.05 & !is.na(padj))
+
+plot_data %>% ggplot(aes(meanExpr, abs(log2FoldChange), color=statisticallySignificant)) + 
+              geom_point(alpha=0.1) + geom_smooth(method='lm') + 
+              theme_minimal() + scale_y_sqrt() + theme(legend.position = 'bottom') +
+              xlab('Mean Expression') + ylab('abs(lfc)') + ggtitle('Log fold change by level of expression')
+```
+
+- When filtering for differential expression, the points seem to separate ino two clouds depending on whether they are over or underexpressed
+
+- The top cloud corresponds to the over expressed genes and the bottom to the under expressed ones
+```{r pca_DE_genes}
+datExpr_DE = datExpr[DE_info$significant,]
+
+pca = datExpr_DE %>% prcomp
+
+plot_data = cbind(data.frame('PC1'=pca$x[,1], 'PC2'=pca$x[,2]), DE_info[DE_info$significant==TRUE,])
+
+pos_zero = -min(plot_data$log2FoldChange)/(max(plot_data$log2FoldChange)-min(plot_data$log2FoldChange))
+p = plot_data %>% ggplot(aes(PC1, PC2, color=log2FoldChange)) + geom_point(alpha=0.5) +
+                  scale_color_gradientn(colours=c('#F8766D','#faa49e','white','#00BFC4','#009499'), 
+                                        values=c(0, pos_zero-0.1, pos_zero, pos_zero+0.1, 1)) +
+                  theme_minimal() + ggtitle('
+PCA of differentially expressed genes') + # This is on purpose, PDF doesn't save well without this white space (?)
+                  xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+                  ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)')) + 
+                  theme(legend.position = 'bottom')
+ggExtra::ggMarginal(p, type='density', color='gray', fill='gray', size=10)
+
+rm(pos_zero, p)
+```
+
+
+Separating the genes into these two groups: Salmon: under-expressed, aqua: over-expressed
+```{r}
+plot_data = plot_data %>% mutate('Group'=ifelse(log2FoldChange>0,'overexpressed','underexpressed')) %>%
+            mutate('Group' = factor(Group, levels=c('underexpressed','overexpressed')))
+plot_data %>% ggplot(aes(PC1, PC2, color=Group)) + geom_point(alpha=0.4) + 
+              xlab(paste0('PC1 (',round(100*summary(pca)$importance[2,1],1),'%)')) +
+              ylab(paste0('PC2 (',round(100*summary(pca)$importance[2,2],1),'%)')) +
+              theme_minimal() + ggtitle('PCA')
+
+rm(pca)
+```
+
+Plotting the mean expression by group in Gandal's dataset there seemed to exist underlying distributions, so we would use GMM to separate them, but everything seems very homogeneous here, so this doesn't seem to be necessary. (If we do it anyway we can see that they still cluster by mean expression, which makes sense since it explains the majority of the variance of the genes)
+
+- **Under-expressed ASD genes tend to have a higher mean expression than over-expressed ones (I would have thought this would be the opposite way)**
+```{r, fig.width=10}
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+tot_n_clusters = 4
+
+plot_data = plot_data %>% mutate('MeanExpr'=rowMeans(datExpr_DE), 'SDExpr'=apply(datExpr_DE,1,sd))
+
+GMM_G1 = plot_data %>% filter(Group=='overexpressed') %>% dplyr::select(MeanExpr) %>% GMM(2)
+GMM_G2 = plot_data %>% filter(Group=='underexpressed') %>% dplyr::select(MeanExpr) %>% GMM(2)
+
+memberships_G1 = data.frame('ID'=plot_data$ID[plot_data$Group=='overexpressed'],
+                            'Membership'=GMM_G1$Log_likelihood %>% 
+                            apply(1, function(x) glue('over_', which.max(x))))
+memberships_G2 = data.frame('ID'=plot_data$ID[plot_data$Group=='underexpressed'],
+                            'Membership'=GMM_G2$Log_likelihood %>%
+                            apply(1, function(x) glue('under_', which.max(x))))
+
+plot_data = rbind(memberships_G1, memberships_G2) %>% left_join(plot_data, by='ID')
+
+p1 = plot_data %>% ggplot(aes(x=MeanExpr, color=Group, fill=Group)) + geom_density(alpha=0.4) + 
+     theme_minimal() + theme(legend.position='bottom')
+
+p2 = plot_data %>% ggplot(aes(x=MeanExpr)) +
+     stat_function(fun=dnorm, n=100, colour=gg_colour_hue(tot_n_clusters)[1],
+                   args=list(mean=GMM_G1$centroids[1], sd=GMM_G1$covariance_matrices[1])) +
+     stat_function(fun=dnorm, n=100, colour=gg_colour_hue(tot_n_clusters)[2],
+                   args=list(mean=GMM_G1$centroids[2], sd=GMM_G1$covariance_matrices[2])) +
+     stat_function(fun=dnorm, n=100, colour=gg_colour_hue(tot_n_clusters)[3],
+                   args=list(mean=GMM_G2$centroids[1], sd=GMM_G2$covariance_matrices[1])) +
+     stat_function(fun=dnorm, n=100, colour=gg_colour_hue(tot_n_clusters)[4],
+                  args=list(mean=GMM_G2$centroids[2], sd=GMM_G2$covariance_matrices[2])) +
+     theme_minimal()
+
+p3 = plot_data %>% ggplot(aes(PC1, PC2, color=Membership)) + geom_point(alpha=0.4) + theme_minimal() + 
+     theme(legend.position='bottom')
+
+grid.arrange(p1, p2, p3, nrow=1)
+
+rm(gg_colour_hue, GMM_G1, GMM_G2, memberships_G1, memberships_G2, p1, p2, p3, tot_n_clusters)
+```
+
+For previous preprocessing pipelines, the pattern found above was also present in the standard deviation, but there doesn't seem to be any distinguishable patterns now. This could be because the variance was almost homogenised with the vst normalisation algorithm.
+```{r}
+plot_data %>% ggplot(aes(x=SDExpr, color=Group, fill=Group)) + geom_density(alpha=0.4) + theme_minimal()
+
+rm(plot_data)
+```
+<br><br>
+
+## Effects of modifying the log fold change threshold
+
+```{r, warning=FALSE, message=FALSE}
+
+fc_list = seq(1, 1.1, 0.005)
+
+n_genes = nrow(datExpr)
+
+# Calculate PCAs
+datExpr_pca_samps = datExpr %>% data.frame %>% t %>% prcomp(scale.=TRUE)
+datExpr_pca_genes = datExpr %>% data.frame %>% prcomp(scale.=TRUE)
+
+# Initialice DF to save PCA outputs
+pcas_samps = datExpr_pca_samps$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+             mutate('ID'=colnames(datExpr), 'fc'=0, PC1=scale(PC1), PC2=scale(PC2))
+pcas_genes = datExpr_pca_genes$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+             mutate('ID'=rownames(datExpr), 'fc'=0, PC1=scale(PC1), PC2=scale(PC2))
+
+pca_samps_old = pcas_samps
+pca_genes_old = pcas_genes
+
+for(fc in fc_list){
+  
+  # Recalculate DE_info with the new threshold (p-values change) an filter DE genes
+  DE_genes = results(dds, lfcThreshold=log2(fc), altHypothesis='greaterAbs') %>% data.frame %>%
+             mutate('ID'=rownames(.)) %>% filter(padj<0.05)
+  
+  datExpr_DE = datExpr %>% data.frame %>% filter(rownames(.) %in% DE_genes$ID)
+  n_genes = c(n_genes, nrow(DE_genes))
+  
+  # Calculate PCAs
+  datExpr_pca_samps = datExpr_DE %>% t %>% prcomp(scale.=TRUE)
+  datExpr_pca_genes = datExpr_DE %>% prcomp(scale.=TRUE)
+
+  # Create new DF entries
+  pca_samps_new = datExpr_pca_samps$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+                  mutate('ID'=colnames(datExpr), 'fc'=fc, PC1=scale(PC1), PC2=scale(PC2))
+  pca_genes_new = datExpr_pca_genes$x %>% data.frame %>% dplyr::select(PC1:PC2) %>% 
+                  mutate('ID'=DE_genes$ID, 'fc'=fc, PC1=scale(PC1), PC2=scale(PC2))  
+  
+  # Change PC sign if necessary
+  if(cor(pca_samps_new$PC1, pca_samps_old$PC1)<0) pca_samps_new$PC1 = -pca_samps_new$PC1
+  if(cor(pca_samps_new$PC2, pca_samps_old$PC2)<0) pca_samps_new$PC2 = -pca_samps_new$PC2
+  if(cor(pca_genes_new[pca_genes_new$ID %in% pca_genes_old$ID,]$PC1,
+         pca_genes_old[pca_genes_old$ID %in% pca_genes_new$ID,]$PC1)<0){
+    pca_genes_new$PC1 = -pca_genes_new$PC1
+  }
+  if(cor(pca_genes_new[pca_genes_new$ID %in% pca_genes_old$ID,]$PC2, 
+         pca_genes_old[pca_genes_old$ID %in% pca_genes_new$ID,]$PC2 )<0){
+    pca_genes_new$PC2 = -pca_genes_new$PC2
+  }
+  
+  pca_samps_old = pca_samps_new
+  pca_genes_old = pca_genes_new
+  
+  # Update DFs
+  pcas_samps = rbind(pcas_samps, pca_samps_new)
+  pcas_genes = rbind(pcas_genes, pca_genes_new)
+  
+}
+
+# Add Diagnosis/SFARI score information
+pcas_samps = pcas_samps %>% left_join(datMeta, by=c('ID')) %>%
+             dplyr::select(ID, PC1, PC2, fc, Diagnosis, brain_lobe)
+# pcas_genes = pcas_genes %>% left_join(SFARI_genes, by='ID') %>% 
+#              mutate('score'=as.factor(`gene-score`)) %>%
+#              dplyr::select(ID, PC1, PC2, lfc, score)
+
+# Plot change of number of genes
+ggplotly(data.frame('fc'=fc_list, 'n_genes'=n_genes[-1]) %>% ggplot(aes(x=fc, y=n_genes)) + 
+         geom_point() + geom_line() + theme_minimal() + xlab('Fold Change') +
+         ggtitle('Number of remaining genes when modifying filtering threshold'))
+
+rm(fc_list, n_genes, fc, pca_samps_new, pca_genes_new, pca_samps_old, pca_genes_old, 
+   datExpr_pca_samps, datExpr_pca_genes)
+```
+
+<br>
+
+### Samples
+
+**Note:** PC values get smaller as Log2 fold change increases, so on each iteration the values were scaled so it would be easier to compare between frames
+<br>
+
+#### Coloured by Diagnosis:
+The lfc threshold doesn't seem to make a big difference for differentiating genes by diagnosis
+```{r, warning=FALSE}
+ggplotly(pcas_samps %>% ggplot(aes(PC1, PC2, color=Diagnosis)) + geom_point(aes(frame=fc, ids=ID)) + 
+         theme_minimal() + ggtitle('Samples PCA plot modifying filtering threshold'))
+```
+<br>
+
+#### Coloured by brain region:
+
+There doesn't seem to be any recognisable pattern
+```{r, warning=FALSE}
+ggplotly(pcas_samps %>% ggplot(aes(PC1, PC2, color=brain_lobe)) + geom_point(aes(frame=fc, ids=ID)) + 
+         theme_minimal() + ggtitle('Samples PCA plot modifying filtering threshold'))
+```
+<br>
+
+### Genes
+```{r, warning=FALSE}
+ggplotly(pcas_genes %>% ggplot(aes(PC1, PC2)) + geom_point(aes(frame=fc, ids=ID, alpha=0.3)) + 
+         theme_minimal() + ggtitle('Genes PCA plot modifying filtering threshold'))
+```
+<br><br>
+
+---
+
+#### Session info
+
+```{r}
+sessionInfo()
+```
+<br><br>
