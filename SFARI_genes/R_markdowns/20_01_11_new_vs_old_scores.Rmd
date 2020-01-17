@@ -1,0 +1,84 @@
+---
+title: 'Publications vs Mean Level of Expression'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, warning=FALSE, message=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-InitialExperiments/SFARI_genes/R_Markdowns/')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; library(ggalluvial)
+library(knitr)
+
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
+```
+
+Load old and new SFARI scores
+```{r, warning=FALSE, message=FALSE}
+
+# Old SFARI Genes scoring
+SFARI_genes_old = read_csv('./../../../Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes_old = SFARI_genes_old[!duplicated(SFARI_genes_old$`gene-symbol`),]
+
+# New SFARI Genes scoring
+SFARI_genes_new = read_csv('./../Data/SFARI_genes_01-03-2020.csv')
+
+SFARI_genes = SFARI_genes_old %>% mutate(gene_score_old = `gene-score`, syndromic_old = syndromic) %>%
+              dplyr::select(`gene-symbol`, gene_score_old, syndromic_old) %>% 
+              full_join(SFARI_genes_new %>% 
+                        mutate(gene_score_new = `gene-score`, syndromic_new = syndromic) %>%
+                        dplyr::select(`gene-symbol`, gene_score_new, syndromic_new), by='gene-symbol')
+```
+
+Create Alluvial diagram to study the change in scores
+
+- The new score 1 seems to come from a mix of scores 1, 2, 3 and some new
+
+- Score 2 consists of genes with previous scores 2 and 3
+
+- Score 3 is almost completely previous score 4
+
+- Scores 5 and 6 have disappeared
+
+```{r}
+# Create connection data frame with a list of flows and their intensity
+summary_info = SFARI_genes %>% group_by(gene_score_old, gene_score_new) %>% tally %>% 
+               replace_na(list(gene_score_old='None', gene_score_new='None')) %>%
+               ungroup(gene_score_old, gene_score_new)
+
+summary_info %>% ggplot(aes(y=n, axis1=gene_score_old, axis2=gene_score_new)) + 
+                 geom_alluvium(discern = TRUE) + 
+                 geom_stratum(discern = TRUE, color = 'white', 
+                              fill=c('#999999','#59B9C9','#62CCA6','#8CC83F','#E8E328','#FFB100','#FF7631',
+                                     '#999999','#E8E328','#FFB100','#FF7631')) + 
+                 geom_text(stat = 'stratum', discern = FALSE, infer.label = TRUE, color='white') +
+                 scale_x_discrete(limits=c('Old','New')) + ylab('Number of Genes') + 
+                 ggtitle('Changes in SFARI scores by gene') + theme_minimal()
+```
+
+Create Alluvial diagram to study the change in the syndromic tag
+
+- Around half of the genes that were previously labeled as syndromic are not longer labelled
+
+- Around half of the the genes now labeled as syndromic weren't in the dataset before
+
+```{r}
+# Create connection data frame with a list of flows and their intensity
+summary_info = SFARI_genes %>% group_by(syndromic_old, syndromic_new) %>% tally %>% 
+               replace_na(list(syndromic_old='None', syndromic_new='None')) %>%
+               ungroup(syndromic_old, syndromic_new)
+
+summary_info %>% ggplot(aes(y=n, axis1=syndromic_old, axis2=syndromic_new)) + 
+                 geom_alluvium(discern = TRUE) + 
+                 geom_stratum(discern = TRUE, color = 'white',
+                              fill=c('#999999', '#dc2641', '#00b3b3', '#999999', '#dc2641', '#00b3b3')) + 
+                 geom_text(stat = 'stratum', discern = FALSE, infer.label = TRUE, color='white') +
+                 scale_x_discrete(limits=c('Old','New')) + ylab('Number of Genes') + 
+                 ggtitle('Changes in SFARI syndromic tag by gene') + theme_minimal()
+```
+
+
