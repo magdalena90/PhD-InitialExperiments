@@ -120,10 +120,10 @@ datMeta = datMeta[match(colnames(datExpr), datMeta$ID),]
 
 # Check they are in the same order
 if(!all(colnames(datExpr) == datMeta$ID)){
-  cat('order of samples don\'t match between datExpr and datMeta!')
+  cat('\norder of samples don\'t match between datExpr and datMeta!\n')
 }
 
-print(paste0('Removed ', sum(!keep), ' samples, ', sum(keep), ' remaining'))
+cat(paste0('Removed ', sum(!keep), ' samples, ', sum(keep), ' remaining'))
 
 rm(keep)
 ```
@@ -132,10 +132,10 @@ rm(keep)
 
 **Diagnosis distribution:** There are more CTL samples than controls, but it's relatively balanced
 ```{r}
-cat('By Sample:\n')
+cat('By Sample:')
 table(datMeta$Diagnosis)
 
-cat('\n\nBy Subject:\n')
+cat('By Subject:')
 table(datMeta$Diagnosis[!duplicated(datMeta$Subject_ID)])
 ```
 <br>
@@ -151,7 +151,7 @@ Most of the Control samples (66%) are from the Occipital lobe, the Autism sample
 ```{r}
 table(datMeta$Diagnosis, datMeta$brain_lobe)
 
-cat(paste0('\n',round(100*sum(datMeta$Diagnosis=='CTL' & datMeta$brain_lobe=='Occipital')/sum(datMeta$brain_lobe=='Occipital')),
+cat(paste0(round(100*sum(datMeta$Diagnosis=='CTL' & datMeta$brain_lobe=='Occipital')/sum(datMeta$brain_lobe=='Occipital')),
            '% of the Control samples are from the Occipital lobe\n'))
 cat(paste0(round(100*sum(datMeta$Diagnosis=='ASD' & datMeta$brain_lobe=='Occipital')/sum(datMeta$brain_lobe=='Occipital')),
            '% of the Autism samples are from the Occipital lobe'))
@@ -351,11 +351,11 @@ print(paste0(length(unique(SFARI_genes$`gene-symbol`[SFARI_genes$ID %in% rowname
 print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
 ```
 
-$\qquad$ 2.2 Removing genes with a mean expression lower than 10 (it's quite high compared to the threshold of 1.7 used in Gandal's dataset)
+$\qquad$ 2.2 Removing genes with a mean expression lower than 5 (it's quite high compared to the threshold of 1.7 used in Gandal's dataset).
 
-- Chose this threshold based on the mean vs sd plot from the Normalisation step.
+- Chose this threshold based on the mean vs sd plot from the Normalisation step. The whole analysis made to select this threshold can be found in 10_01_05_gene_expression_filtering_threshold.html
 ```{r, warning=FALSE, fig.width=10}
-threshold = 10
+threshold = 8
 plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr))
 
 ggplotly(plot_data %>% ggplot(aes(x=mean_expression)) + 
@@ -396,7 +396,7 @@ print(paste0('Outlier samples: ', paste(as.character(plot_data$Sample_ID[plot_da
 ```
 
 ```{r}
-to_keep = abs(z.ku)<2
+to_keep = z.ku >= -2
 datMeta = datMeta[to_keep,]
 datExpr = datExpr[,to_keep]
 
@@ -504,7 +504,7 @@ sva_fit = svaseq(norm.cts, mod=mod, mod0=mod0)
 rm(mod, mod0, norm.cts)
 ```
 
-Found 24 surrogate variables, since there is no direct way to select which ones to pick [Bioconductor answer](https://support.bioconductor.org/p/71447/), kept all of them.
+Found 23 surrogate variables, since there is no direct way to select which ones to pick [Bioconductor answer](https://support.bioconductor.org/p/71447/), decided to keep all of them.
 
 Include SV estimations to datMeta information
 ```{r}
@@ -551,6 +551,10 @@ dds = DESeqDataSet(se, design = ~ SiteHM + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + S
 
 # Perform DEA
 dds = DESeq(dds)
+#dds = estimateSizeFactors(dds)
+#dds = estimateDispersions(dds)
+#dds = nbinomWaldTest(dds, maxit=10000)
+
 DE_info = results(dds, lfcThreshold=0, altHypothesis='greaterAbs')
 
 # Perform vst
@@ -744,7 +748,7 @@ https://support.bioconductor.org/p/50983/
 #datExpr = datExpr %>% as.matrix %>% ComBat(batch=datMeta$Batch)
 ```
 
-Now both batches have almost the same mean expression
+<!-- Now both batches have almost the same mean expression -->
 ```{r, warning=FALSE}
 #plot_data_b1 = data.frame('Mean'=colMeans(datExpr[,datMeta$RNAExtractionBatch=='10/10/2014']), 'Batch'='10/10/2014')
 #plot_data_b2 = data.frame('Mean'=colMeans(datExpr[,datMeta$RNAExtractionBatch=='6/20/2014']), 'Batch'='6/20/2014')
