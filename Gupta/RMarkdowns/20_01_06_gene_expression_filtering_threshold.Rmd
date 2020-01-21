@@ -50,7 +50,7 @@ datMeta = datMeta %>% dplyr::rename(Subject_ID = sampleid)
 
 
 # SFARI Genes
-SFARI_genes = read_csv('./../../../Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
 SFARI_genes = SFARI_genes[!duplicated(SFARI_genes$ID) & !is.na(SFARI_genes$ID),]
 ```
 
@@ -287,7 +287,7 @@ ggplotly(plot_data %>% ggplot(aes(threshold, n)) + geom_point() + geom_line() +
 
 I'm not sure which threshold is the best, perhaps 5 is a good compromise between keeping enough genes and removing the worst of the lower trend line, but the problematic trend is not completely gone with it...
 
-**Note:** Using the threshold of 5, when calculating the DE genes with the DESeq function, over 200 rows do not converge, which happenes when the filtering threshold is too low, so because of this, the threshold was increased to 6.
+**Note:** Using the threshold of 5, when calculating the DE genes with the DESeq function, over 200 rows do not converge (modifying the maxit parameter it goes down to 193) which results in over 4600 genes without and adjusted p-value. This happens when the filtering threshold is too low, but it continues happening with higher and higher thresholds, which makes us lose many genes, so for now, instead of increasing the filtering threshold, these genes that didn't converge will stay with NAs as their adjusted p-values (I don't think this makes a lot of damage and we get to keep the information of all the other genes that weren't filtered out).
 
 <br>
 

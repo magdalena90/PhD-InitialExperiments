@@ -30,7 +30,7 @@ GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>%
               mutate('Neuronal'=1)
 
 # SFARI Genes
-SFARI_genes = read_csv('./../../../Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
 SFARI_genes = SFARI_genes[!duplicated(SFARI_genes$ID) & !is.na(SFARI_genes$ID),]
 
 # Update DE_info with SFARI and Neuronal information
@@ -193,8 +193,6 @@ rm(datExpr_prep, datMeta_prep, DE_info_prep)
 **Based on this, since we saw there is a strong relation between SFARI score and mean expression, assuming the SFARI scores are reliable, log fold change should not be used as a metric to determine differential expression when studying autism.**
 <br><br>
 
-On top of this, I believe this effect is made more extreme by the pattern found in the previous plots, since the higher expressed genes were the most affected by the normalisation transformation, ending up with a smaller variance than the rest of the data, which is related to smaller ratios. (This is a constant problem independently of the normalisation function used).
-
 ```{r}
 ggplotly(DE_info %>% ggplot(aes(x=gene.score, y=abs(log2FoldChange), fill=gene.score)) + 
          geom_boxplot() + scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + 
@@ -213,10 +211,10 @@ ggplotly(DE_info %>% ggplot(aes(x=gene.score, y=abs(log2FoldChange), fill=gene.s
 
 - SFARI gene group 1 now has the highest percentage of remaining genes (opposite to Gandal's), although the number of genes with SFARI score 1 is small, so this could be unreliable
 
-- If we stick to the original null hypothesis $H_0: lfc=0$, only 71/910 SFARI genes are statistically significant (9%)
+- If we stick to the original null hypothesis $H_0: lfc=0$, only 60/862 SFARI genes are statistically significant (~7%)
 
 ```{r lfc_by_SFARI_score_plot, fig.width=10, warning=FALSE, message=FALSE}
-lfc_list = seq(1, 1.15, 0.005)
+lfc_list = seq(1, 1.14, 0.005)
 
 all_counts = data.frame('group'='All', 'n'=as.character(nrow(DE_info)))
 Neuronal_counts = data.frame('group'='Neuronal', n=as.character(sum(DE_info$Neuronal)))

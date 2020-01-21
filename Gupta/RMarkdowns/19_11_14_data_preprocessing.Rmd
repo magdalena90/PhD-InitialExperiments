@@ -50,7 +50,7 @@ datMeta = datMeta %>% dplyr::rename(Subject_ID = sampleid)
 
 
 # SFARI Genes
-SFARI_genes = read_csv('./../../../Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
 SFARI_genes = SFARI_genes[!duplicated(SFARI_genes$ID) & !is.na(SFARI_genes$ID),]
 ```
 
@@ -353,9 +353,9 @@ print(paste0('Removed ', sum(!to_keep), ' genes, ', sum(to_keep), ' remaining'))
 
 $\qquad$ 2.2 Removing genes with a mean expression lower than 5 (it's quite high compared to the threshold of 1.7 used in Gandal's dataset).
 
-- Chose this threshold based on the mean vs sd plot from the Normalisation step. The whole analysis made to select this threshold can be found in 10_01_05_gene_expression_filtering_threshold.html
+- Chose this threshold based on the mean vs sd plot from the Normalisation step. The whole analysis made to select this threshold can be found in 20_01_06_gene_expression_filtering_threshold.html
 ```{r, warning=FALSE, fig.width=10}
-threshold = 8
+threshold = 5
 plot_data = data.frame('id'=rownames(datExpr), 'mean_expression' = rowMeans(datExpr))
 
 ggplotly(plot_data %>% ggplot(aes(x=mean_expression)) + 
@@ -550,10 +550,10 @@ dds = DESeqDataSet(se, design = ~ SiteHM + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + S
                                   SV19 + SV20 + SV21 + SV22 + SV23 + Diagnosis)
 
 # Perform DEA
-dds = DESeq(dds)
-#dds = estimateSizeFactors(dds)
-#dds = estimateDispersions(dds)
-#dds = nbinomWaldTest(dds, maxit=10000)
+#dds = DESeq(dds) # Changed this for the three lines below because some rows don't converge
+dds = estimateSizeFactors(dds)
+dds = estimateDispersions(dds)
+dds = nbinomWaldTest(dds, maxit=10000)
 
 DE_info = results(dds, lfcThreshold=0, altHypothesis='greaterAbs')
 
@@ -738,37 +738,38 @@ rm(plot_data_b1, plot_data_b2, plot_data, mu)
 ```
 <br>
 
-### Performing Batch Correction for processing site?
+### Performing Batch Correction for processing site
 
-For now, I won't do this because of the correlation between processing site and diagnosis
+I will save the batch corrected dataset as a different dataset because of the correlation between processing site and diagnosis
 
 https://support.bioconductor.org/p/50983/
 
 ```{r ComBat}
-#datExpr = datExpr %>% as.matrix %>% ComBat(batch=datMeta$Batch)
+datExpr_combat = datExpr %>% as.matrix %>% ComBat(batch=datMeta$SiteHM)
 ```
 
-<!-- Now both batches have almost the same mean expression -->
+Now both batches have almost the same mean expression (we'd have to see what effect this has on the Diagnosis variable)
 ```{r, warning=FALSE}
-#plot_data_b1 = data.frame('Mean'=colMeans(datExpr[,datMeta$RNAExtractionBatch=='10/10/2014']), 'Batch'='10/10/2014')
-#plot_data_b2 = data.frame('Mean'=colMeans(datExpr[,datMeta$RNAExtractionBatch=='6/20/2014']), 'Batch'='6/20/2014')
+plot_data_b1 = data.frame('Mean'=colMeans(datExpr_combat[,datMeta$SiteHM=='H']), 'Batch'='H')
+plot_data_b2 = data.frame('Mean'=colMeans(datExpr_combat[,datMeta$SiteHM=='M']), 'Batch'='M')
 
-#plot_data = rbind(plot_data_b1, plot_data_b2)
-#mu = plot_data %>% group_by(Batch) %>% dplyr::summarise(BatchMean=mean(Mean))
+plot_data = rbind(plot_data_b1, plot_data_b2)
+mu = plot_data %>% group_by(Batch) %>% dplyr::summarise(BatchMean=mean(Mean))
 
-#ggplotly(plot_data %>% ggplot(aes(x=Mean, color=Batch, fill=Batch)) + geom_density(alpha=0.3) + 
-#         geom_vline(data=mu, aes(xintercept=BatchMean, color=Batch), linetype='dashed') +
-#         ggtitle('Mean expression by sample grouped by processing date') + scale_x_log10() + theme_minimal())
+ggplotly(plot_data %>% ggplot(aes(x=Mean, color=Batch, fill=Batch)) + geom_density(alpha=0.3) + 
+         geom_vline(data=mu, aes(xintercept=BatchMean, color=Batch), linetype='dashed') +
+         ggtitle('Mean expression by sample grouped by processing date') + scale_x_log10() + theme_minimal())
 
-#rm(plot_data_b1, plot_data_b2, plot_data, mu)
+rm(plot_data_b1, plot_data_b2, plot_data, mu)
 ```
 <br>
 
 ---
 
-#### Save preprocessed dataset
+#### Save preprocessed datasets with and without ComBat correction
 ```{r save_preprocessed_dataset}
 save(datExpr, datMeta, datGenes, DE_info, dds, file='./../Data/preprocessed_data.RData')
+save(datExpr_combat, datMeta, datGenes, DE_info, dds, file='./../Data/preprocessed_data_ComBat.RData')
 #load('./../Data/Gandal/preprocessed_data.RData')
 ```
 <br><br>
@@ -780,5 +781,3 @@ save(datExpr, datMeta, datGenes, DE_info, dds, file='./../Data/preprocessed_data
 sessionInfo()
 ```
 <br><br>
-
-

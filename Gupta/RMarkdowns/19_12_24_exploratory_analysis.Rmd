@@ -9,13 +9,13 @@ output:
 
 - The datasets are quite similar in general
 
-- Autism samples have higher levels of expression
+- Autism samples have higher levels of expression (again! This is weird)
 
-- Overexpressed genes have a higher level of expression than under expressed genes (again, I think it's weird)
+- Overexpressed genes have a higher level of expression than under expressed genes (again!)
 
 - DE genes separate into two clouds based on the sign of their lfc
 
-- This dataset has five times less DE genes than Gandal, with only 5% of its genes being DE
+- This dataset has five times less DE genes than Gandal, with only 4% of its genes being DE
 
 - There don't seem to be underlying distributions when plotting genes by mean expression or by standard deviation anymore
 
@@ -253,7 +253,7 @@ rm(perplexities, ps, tsne, i)
 
 ### Differential Expression Analysis
 
-- Only 747 genes (~5% vs ~26% in Gandal's dataset) are significant using a threshold of 0.05 for the adjusted p-value and a without a log Fold Change threshold (keeping the null hypothesis $H_0: lfc=0$)
+- Only 621 genes (~4% vs ~26% in Gandal's dataset) are significant using a threshold of 0.05 for the adjusted p-value and a without a log Fold Change threshold (keeping the null hypothesis $H_0: lfc=0$)
 
 - All genes don't have an adjusted p-value (no NAs)
 ```{r}
@@ -268,10 +268,10 @@ ggExtra::ggMarginal(p, type = 'density', color='gray', fill='gray', size=10)
 rm(p)
 ```
 
-- There is a clear negative relation between lfc and mean expression, for both differentially expressed and not differentially expressed groups of genes
+- There is a clear negative relation between lfc and mean expression, specially for differentially expressed genes
 ```{r logFC_vs_meanExpr, fig.width=10, warning=FALSE}
 plot_data = data.frame('ID'=rownames(datExpr), 'meanExpr'=rowMeans(datExpr)) %>% left_join(DE_info, by='ID') %>%
-            mutate('statisticallySignificant'=padj<0.05 & !is.na(padj))
+            mutate('statisticallySignificant' = ifelse(is.na(padj),NA, ifelse(padj<0.05, TRUE, FALSE)))
 
 plot_data %>% ggplot(aes(meanExpr, abs(log2FoldChange), color=statisticallySignificant)) + 
               geom_point(alpha=0.1) + geom_smooth(method='lm') + 
@@ -319,7 +319,7 @@ rm(pca)
 Plotting the mean expression by group in Gandal's dataset there seemed to exist underlying distributions, so we would use GMM to separate them, but everything seems very homogeneous here, so this doesn't seem to be necessary. (If we do it anyway we can see that they still cluster by mean expression, which makes sense since it explains the majority of the variance of the genes)
 
 - **Under-expressed ASD genes tend to have a higher mean expression than over-expressed ones (I would have thought this would be the opposite way)**
-```{r, fig.width=10}
+```{r, fig.width=10, warning=FALSE}
 gg_colour_hue = function(n) {
   hues = seq(15, 375, length = n + 1)
   hcl(h = hues, l = 65, c = 100)[1:n]
