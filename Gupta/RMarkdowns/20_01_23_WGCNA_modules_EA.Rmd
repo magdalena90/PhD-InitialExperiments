@@ -1,0 +1,415 @@
+---
+title: 'WGCNA Modules Exploratory Analysis'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, warning=FALSE, message=FALSE}
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(plotly) ; library(dendextend)
+library(RColorBrewer) ; library(viridis) ; require(gridExtra) ; library(GGally)
+library(expss)
+library(polycor)
+library(foreach) ; library(doParallel)
+suppressWarnings(suppressMessages(library(WGCNA)))
+
+SFARI_colour_hue = function(r) {
+  pal = c('#FF7631','#FFB100','#E8E328','#8CC83F','#62CCA6','#59B9C9','#b3b3b3','#808080','gray','#d9d9d9')[r]
+}
+```
+
+Load preprocessed dataset (preprocessing code in 19_11_14_data_preprocessing.Rmd) and clustering (pipeline in 20_01_23_WGCNA.Rmd)
+```{r load_dataset, message=FALSE, warning=FALSE}
+
+# Gupta dataset
+load('./../Data/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+
+# SFARI Genes
+SFARI_genes = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes = SFARI_genes[!duplicated(SFARI_genes$ID) & !is.na(SFARI_genes$ID),]
+
+# Clusterings
+clusterings = read_csv('./../Data/clusters.csv')
+
+
+# Update DE_info with SFARI and Neuronal information
+genes_info = DE_info %>% mutate('ID'=rownames(.)) %>% left_join(SFARI_genes, by='ID') %>% 
+  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+  left_join(GO_neuronal, by='ID') %>% left_join(clusterings, by='ID') %>%
+  mutate(Neuronal=ifelse(is.na(Neuronal), 0, Neuronal)) %>%
+  mutate(gene.score=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`), 
+         significant=padj<0.05 & !is.na(padj))
+
+
+rm(DE_info, GO_annotations, clusterings)
+```
+
+---
+
+# Dynamic Tree vs Dyamic Hybrid
+
+```{r}
+print(paste0('Dynamic Tree leaves ', sum(genes_info$DynamicTree=='gray'), ' genes without cluster (', 
+             round(mean(genes_info$DynamicTree=='gray')*100), '%)'))
+
+print(paste0('Dynamic Hybrid leaves ', sum(genes_info$DynamicHybrid=='gray'), ' genes without cluster (', 
+             round(mean(genes_info$DynamicHybrid=='gray')*100), '%)'))
+
+```
+
+Dynamic Tree leaves many more genes without a cluster, so perhaps this is not the best option with this new dataset...
+
+There seems to be a relation between DE and module membership, being DE a more restrictive condition than being assigned to a cluster. In both cases, most of the genes were left out.
+
+**This could be a consequence of the sva batch correction, because all the patterns that survived were diagnosis related, so it could have left all the genes with no relation to ASD without any recognisable pattern, which left them at the top of the dendrogram, which are the ones the clustering algorithm didn't assign to any module**
+```{r pca_plots, warning=FALSE, fig.width=10}
+pca = datExpr %>% prcomp
+
+plot_data = data.frame('ID'=rownames(datExpr), 'PC1' = pca$x[,1], 'PC2' = pca$x[,2]) %>%
+            left_join(genes_info, by='ID') %>% mutate('hasCluster'=DynamicTree!='gray', 
+                                                      'hasSFARIScore'=`gene-score`!='None') %>%
+            apply_labels(`gene-score`='SFARI Gene score', DynamicTree = 'Dynamic Tree Algorithm', 
+                         significant = 'Differentially Expressed', hasCluster = 'Belongs to a Module',
+                         hasSFARIScore = 'Has a SFARI Score', syndromic = 'Has syndromic tag')
+
+p1 = plot_data %>% ggplot(aes(PC1, PC2, color=hasCluster)) + geom_point(alpha=0.2) + 
+  theme_minimal() + ggtitle('Genes are assigned to a cluster') + theme(legend.position='bottom')
+
+p2 = plot_data %>% ggplot(aes(PC1, PC2, color=significant)) + geom_point(alpha=0.2) + 
+  theme_minimal() + ggtitle('Genes were found to be DE') + theme(legend.position='bottom')
+
+grid.arrange(p1, p2, nrow=1)
+
+rm(pca, p1, p2)
+```
+
+Most of the genes that don't have a cluster (98%) are not differentially expressed.
+```{r}
+cro(plot_data$significant, list(plot_data$hasCluster, total()))
+```
+
+But we lose most of the SFARI genes if we do that
+```{r}
+cro(plot_data$hasSFARIScore, list(plot_data$hasCluster, total()))
+
+print(paste0(sum(plot_data$hasSFARIScore & !plot_data$hasCluster), ' of the SFARI genes (',
+             round(100*sum(plot_data$hasSFARIScore & !plot_data$hasCluster)/sum(plot_data$hasSFARIScore)),
+             '%) are not assigned to any cluster'))
+```
+
+Separated by scores
+```{r}
+cro(plot_data$`gene-score`, list(plot_data$hasCluster, total()))
+
+rm(plot_data)
+```
+
+## Conclusion:
+
+ The main difference between algorithms is that Dynamic Hybrid clusters outlier genes and Dynamic Tree leaves them out, so Dynamic Tree would give me a 'cleaner' group of genes to work with but losing too many genes, and Dynamic Hybrid would give me less and more balanced clusters, but the Dynamic Tree algorithm leaves too many genes (including most of the SFARI genes) without a cluster, so I'm going to use the Dynamic Hybrid results.
+
+**Using the clustering from Dynamic Hybrid**
+```{r select_clustering_method}
+clustering_selected = 'DynamicHybrid'
+genes_info$Module = genes_info[,clustering_selected]
+```
+
+---
+
+# Dynamic Hybrid Modules
+
+*The colour of the modules is the arbitrary one assigned during the WGCNA algorithm, where the gray cluster actually represents all the genes that were left without a cluster (so it's not actually a cluster).
+```{r dynamic_hybrid_module_count, fig.width=10}
+
+cat(paste0('The Dynamic Hybrid algorithm created ', length(unique(genes_info$Module))-1, ' modules and leaves ',
+           sum(genes_info$Module=='gray'), ' genes without a module.\n'))
+
+table(genes_info$Module)
+
+plot_data = table(genes_info$Module) %>% data.frame %>% arrange(desc(Freq))
+
+ggplotly(plot_data %>% ggplot(aes(x=reorder(Var1, -Freq), y=Freq)) + geom_bar(stat='identity', fill=plot_data$Var1) + 
+         ggtitle('Module size') + ylab('Number of genes') + xlab('Module') + theme_minimal() + 
+         theme(axis.text.x = element_text(angle = 90)))
+```
+
+<br>
+
+## Relation to external clinical traits
+
+### Quantifying module-trait associations
+
+In the WGCNA documentation they use Pearson correlation to calculate correlations, I think all of their variables were continuous. Since I have categorical variables I'm going to use the `hetcor` function, that calculates Pearson, polyserial or polychoric correlations depending on the type of variables involved.
+
+- I'm not sure how the `corPvalueStudent` function calculates the p-values and I cannot find any documentation...
+
+- Compared correlations using Pearson correlation and with hetcor and they are very similar, but a bit more extreme with hetcor. The same thing happens with the p-values.
+
+```{r calc_module_trait_associations, message=FALSE, warning=FALSE}
+datTraits = datMeta %>% dplyr::select(Diagnosis, brain_lobe, Gender, Age, PMI, SiteHM) %>% rename('Batch' = SiteHM)
+
+# Recalculate MEs with color labels
+ME_object = datExpr %>% t %>% moduleEigengenes(colors = genes_info$Module)
+MEs = orderMEs(ME_object$eigengenes)
+
+# Calculate correlation between eigengenes and the traits and their p-values
+# I was originally using ML=TRUE in the hetcor function, but in the Gandal dataset that created an NA and in this dataset it took too long to run
+moduleTraitCor = MEs %>% apply(2, function(x) hetcor(x, datTraits)$correlations[1,-1]) %>% t
+rownames(moduleTraitCor) = colnames(MEs)
+colnames(moduleTraitCor) = colnames(datTraits)
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nrow(datExpr))
+
+# Create text matrix for the Heatmap
+textMatrix = paste0(signif(moduleTraitCor, 2), ' (', signif(moduleTraitPvalue, 1), ')')
+dim(textMatrix) = dim(moduleTraitCor)
+
+# In case there are any NAs
+if(sum(!complete.cases(moduleTraitCor))>0){
+  print(paste0(sum(is.na(moduleTraitCor)),' correlation(s) could not be calculated')) 
+}
+
+rm(ME_object)
+```
+
+Modules have strong correlations with Diagnosis (although not as strong as with Gandal's dataset) with really small p-values. Because of the batch effect, there are strong correlations to processing site as well, although they aren't as strong as with Diagonsis, and there's also one module with a strong correlation with gender.
+
+It's a good sign that the gray module has a low correlation with diagnosis, since we know its composed mainly of not differentially expressed genes.
+
+```{r plot_heatmap, fig.width=10, fig.height=20}
+# Sort moduleTraitCor by Diagnosis
+moduleTraitCor = moduleTraitCor[order(moduleTraitCor[,1], decreasing=TRUE),]
+moduleTraitPvalue = moduleTraitPvalue[order(moduleTraitCor[,1], decreasing=TRUE),]
+
+# Create text matrix for the Heatmap
+textMatrix = paste0(signif(moduleTraitCor, 2), ' (', signif(moduleTraitPvalue, 1), ')')
+dim(textMatrix) = dim(moduleTraitCor)
+
+
+labeledHeatmap(Matrix = moduleTraitCor, xLabels = names(datTraits), yLabels =  gsub('ME','',rownames(moduleTraitCor)), 
+               yColorWidth=0, colors = brewer.pal(11,'PiYG'), bg.lab.y = gsub('ME','',rownames(moduleTraitCor)),
+               textMatrix = textMatrix, setStdMargins = FALSE, cex.text = 0.8, cex.lab.y = 0.75, zlim = c(-1,1),
+               main = paste('Module-Trait relationships'))
+
+diagnosis_cor = data.frame('Module' = gsub('ME','',rownames(moduleTraitCor)),
+                           'MTcor' = moduleTraitCor[,'Diagnosis'],
+                           'MTpval' = moduleTraitPvalue[,'Diagnosis'])
+
+genes_info = genes_info %>% left_join(diagnosis_cor, by='Module')
+
+rm(moduleTraitCor, moduleTraitPvalue, datTraits, textMatrix, diagnosis_cor)
+```
+
+Modules with a high Module-Diagnosis correlation should have a high content of differentially expressed genes.
+
+This is specially strong for modules with a negative correlation. Many modules have no differentially expressed genes because in total there aren't that many of these genes, usually they are small modules (which can be seen by the size of the point in the plot).
+
+```{r MD_DE_genes, warning=FALSE}
+plot_data = genes_info %>% group_by(Module, MTcor) %>% summarise(p = 100*mean(significant), size=n())
+
+ggplotly(plot_data %>% ggplot(aes(MTcor, p)) + geom_hline(yintercept=mean(plot_data$p), color='gray', linetype='dotted') +
+         geom_point(color=plot_data$Module, alpha=0.8, aes(id=Module, size=size)) + theme_minimal() + 
+         xlab('Modules ordered by Module-Diagnosis correlation') + ylab('Percentage of differentially expressed genes'))
+```
+
+<br>
+
+## Gene Significance and Module Membership
+
+**Gene significance:** is the value between the correlation between the gene and the trait we are interested in. A positive gene significance means the gene is overexpressed and a negative value means its underexpressed. (The term 'significance' is not very acurate because it's not actually measuring statistical significance, it's just a correlation, but that's how they call it in WGCNA...)
+
+**Module Membership** is the correlation of the module's eigengene and the expression profile of a gene. The higher the Module Membership, the more similar the gene is to the genes that constitute the module. (I won't use this metric yet)
+
+```{r module_membership}
+# It's more efficient to iterate the correlations one by one, otherwise it calculates correlations between the eigengenes and also between the genes, which we don't need
+
+# Check if MM information already exists and if not, calculate it
+if(file.exists(paste0('./../Data/dataset_', clustering_selected, '.csv'))){
+  
+  dataset = read.csv(paste0('./../Data/dataset_', clustering_selected, '.csv'))
+  dataset$Module = dataset[,clustering_selected]
+  
+} else {
+  
+  ############# 1. Calculate Gene Significance
+  GS_info = data.frame('ID' = rownames(datExpr),
+                       'GS' = datExpr %>% apply(1, function(x) hetcor(x, datMeta$Diagnosis)$correlations[1,2])) %>%
+            mutate('GSpval' = corPvalueStudent(GS, ncol(datExpr)))
+  
+  #############  2. Calculate Module Membership
+  
+  #setup parallel backend to use many processors
+  cores = detectCores()
+  cl = makeCluster(cores-1)
+  registerDoParallel(cl)
+  
+  # Create matrix with MM by gene
+  MM = foreach(i=1:nrow(datExpr), .combine=rbind) %dopar% {
+    library(polycor)
+    tempMatrix = apply(MEs, 2, function(x) hetcor(as.numeric(datExpr[i,]), x)$correlations[1,2])
+    tempMatrix
+  }
+  
+  # Stop clusters
+  stopCluster(cl)
+  
+  rownames(MM) = rownames(datExpr)
+  colnames(MM) = paste0('MM',gsub('ME','',colnames(MEs)))
+  
+  # Calculate p-values
+  MMpval = MM %>% corPvalueStudent(ncol(datExpr)) %>% as.data.frame
+  colnames(MMpval) = paste0('MMpval', gsub('ME','',colnames(MEs)))
+  
+  MM = MM %>% as.data.frame %>% mutate(ID = rownames(.))
+  MMpval = MMpval %>% as.data.frame %>% mutate(ID = rownames(.))
+  
+  # Join and save results
+  dataset = genes_info %>% dplyr::select(ID, `gene-score`, clustering_selected, MTcor, MTpval) %>%
+            left_join(GS_info, by='ID') %>%
+            left_join(MM, by='ID') %>%
+            left_join(MMpval, by='ID')
+  
+  write.csv(dataset, file = paste0('./../Data/dataset_', clustering_selected, '.csv'), row.names = FALSE)
+  
+  rm(cores, cl) 
+  
+}
+
+```
+
+<br>
+
+## Analysing concordance between these metrics in the genes
+
+<br>
+
+### 1. Gene Significance vs Log Fold Change
+
+Gene significance and Log Fold Chance are two different ways to measure the same thing, so there should be a concordance between them
+
+But both variables agree with each other quite well
+
+```{r GS_lfc, warning=FALSE, message=FALSE}
+plot_data = dataset %>% dplyr::select(ID, MTcor, GS) %>% left_join(genes_info %>% dplyr::select(ID, gene.score), by='ID') %>%
+            left_join(genes_info %>% dplyr::select(ID, baseMean, log2FoldChange, significant, Module), by='ID') %>%
+            left_join(data.frame(MTcor=unique(dataset$MTcor)) %>% arrange(by=MTcor) %>% 
+                                 mutate(order=1:length(unique(dataset$MTcor))), by='MTcor')
+
+ggplotly(plot_data %>% ggplot(aes(GS, log2FoldChange)) + geom_point(color=plot_data$Module, alpha=0.2) + 
+         geom_smooth(color='gray', se=FALSE) + theme_minimal() + xlab('Gene Significance') + 
+         ggtitle(paste0('Correlation = ', round(cor(plot_data$log2FoldChange, plot_data$GS)[1], 2))))
+```
+
+<br>
+
+### 2. Module-Diagnosis correlation vs Gene Significance
+
+In general, modules with the highest Module-Diagnosis correlation should have genes with high Gene Significance
+
+**Note:** For the Module-Diagnosis plots, if you do boxplots, you lose the exact module-diagnosis correlation and you only keep the order, so I decided to compensate this downside with a second plot, where each point is plotted individually using their module's Module-Diagnosis correlation as the x axis. I think the boxplot plot is easier to understand but the second plot contains more information, so I don't know which one is better.
+
+```{r MD_GS_boxplot, fig.width=10}
+ggplotly(plot_data %>% ggplot(aes(order, GS, group=order)) + geom_hline(yintercept=0, color='gray', linetype='dotted') +
+         geom_boxplot(fill=unique(plot_data$Module)) + theme_minimal() + 
+         xlab('Modules ordered by Module-Diagnosis correlation') + ylab('Gene Significance'))
+```
+
+```{r MD_GS_points, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(MTcor, GS)) + geom_hline(yintercept=0, color='gray', linetype='dotted') + 
+         geom_point(color=plot_data$Module, alpha=0.1, aes(id=ID)) + geom_smooth(color='gray', alpha=0.3) + 
+         theme_minimal() + xlab('Module-Diagnosis correlation') + ylab('Gene Significance'))
+```
+
+### 3. Module-Diagnosis correlation vs Log Fold Change
+
+The same should happen with the Log Fold Change
+
+```{r MD_LFC_boxplot, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(order, log2FoldChange, group=order)) + geom_hline(yintercept=0, color='gray', linetype='dotted') +
+         geom_boxplot(fill=unique(plot_data$Module)) + 
+         theme_minimal() + xlab('Modules ordered by Module-Diagnosis correlation') + ylab('log2FoldChange'))
+```
+
+```{r MD_LFC_points, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(MTcor, log2FoldChange)) + geom_hline(yintercept=0, color='gray', linetype='dotted') +
+         geom_point(color=plot_data$Module, alpha=0.1, aes(id=ID)) + geom_smooth(color='gray', alpha=0.3) + 
+         theme_minimal() + xlab('Module-Diagnosis correlation') + ylab('log2FoldChange'))
+```
+
+<br>
+
+### 4. Module-Diagnosis vs Mean Expression
+
+In theory, there shouldn't be a relation between module-diagnosis and mean expression, but in the the exploratory analysis, we saw that the overexpressed genes tended to have lower levels of expression than the overexpressed genes, and this pattern can be seen in these plots where the modules with negative Module-Diagonsis correlation have slightly higher levels of expression than the modules with positive Module-Diagnosis correlation, although this pattern is note very strong and all modules have similar levels of expression.
+
+```{r MD_ME_boxplot, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(order, log2(baseMean+1), group=order)) + 
+         geom_hline(yintercept=mean(log2(plot_data$baseMean+1)), color='gray', linetype='dotted') +
+         geom_boxplot(fill=unique(plot_data$Module)) + theme_minimal() + 
+         xlab('Modules ordered by Module-Diagnosis correlation') + ylab('log2(Mean Expression+1)'))
+```
+
+```{r MD_ME_points, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(MTcor, log2(baseMean+1))) + geom_point(alpha=0.2, color=plot_data$Module, aes(id=ID)) + 
+         geom_hline(yintercept=mean(log2(plot_data$baseMean+1)), color='gray', linetype='dotted') + ylab('log2(Mean Expression+1)') +
+         geom_smooth(color='gray', alpha=0.3) + theme_minimal() + xlab('Module-Diagnosis correlation'))
+```
+
+### Conclusion:
+
+All of the variables seem to agree with each other, Modules with a high correlation with Diagnosis tend to have genes with high values of Log Fold Change as well as high values of Gene Significance, and the gray module, which groups all the genes that weren't assigned to any cluster tends to have a very poor performance in all of the metrics.
+
+<br><br>
+
+## SFARI Scores
+
+Since SFARI scores genes depending on the strength of the evidence linking it to the development of autism, in theory, there should be some concordance between the metrics we have been studying above and these scores...
+
+### SFARI Scores vs Gene Significance
+
+- SFARI scores 3 to 5 have a lower median than all genes that have a neuronal-related annotation <span style="color:'red'>!</span>
+
+- The group with the highest Gene Significance is SFARI score 6, which is supposed to be the one with the least amount of evidence suggesting a relation to autism <span style="color:'red'>!</span>
+
+- SFARI score 5 is the group with the lowest Gene Significance, with the same median than the genes without any type of Neuronal annotation <span style="color:'red'>!</span>
+
+- Neuronal annotated genes have higher Gene Significance than genes without any neuronal-related annotation (makes sense)
+
+```{r SFARI_GS, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(gene.score, abs(GS), fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() + 
+         ylab('abs(Gene Significance)') + xlab('SFARI Scores') + theme(legend.position='none'))
+```
+
+### SFARI Scores vs Module-Diagnosis correlation
+
+- The group with the highest Module-Diagnosis correlation is SFARI score 6, which is supposed to be the one with the least amount of evidence suggesting a relation to autism <span style="color:'red'>!</span>
+
+```{r SFARI_MD, fig.width=10, warning=FALSE, message=FALSE}
+ggplotly(plot_data %>% ggplot(aes(gene.score, abs(MTcor), fill=gene.score)) + geom_boxplot() + 
+         scale_fill_manual(values=SFARI_colour_hue(r=c(1:6,8,7))) + theme_minimal() + 
+         ylab('abs(Module-Trait Correlation)') + xlab('SFARI Scores') + theme(legend.position='none'))
+```
+
+### Conclusion:
+
+Not only are SFARI genes not consistent with the other measurements, but they seem to contradict them, although these differences are not as strong as with Gandal's dataset.
+
+<br><br>
+
+#### Session info
+
+```{r print_session_info}
+sessionInfo()
+```
+<br><br>

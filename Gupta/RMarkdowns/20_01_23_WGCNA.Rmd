@@ -1,0 +1,327 @@
+---
+title: 'Perform WGCNA'
+output:
+  html_document:
+    code_folding: 'hide'
+---
+
+```{r load_packages, echo=TRUE, warning=FALSE, message=FALSE}
+#setwd('/afs/inf.ed.ac.uk/user/s17/s1725186/Documents/PhD-Models/FirstPUModel/RMarkdowns')
+
+library(tidyverse) ; library(reshape2) ; library(glue) ; library(dendextend)
+library(RColorBrewer) ; require(gridExtra) ; library(GGally)
+suppressMessages(library(WGCNA))
+library(ClusterR)
+library(expss)
+```
+
+Load preprocessed dataset (preprocessing code in 19_11_14_data_preprocessing.Rmd)
+```{r load_dataset, echo=TRUE, message=FALSE, warning=FALSE}
+# Gupta dataset
+load('./../Data/preprocessed_data.RData')
+datExpr = datExpr %>% data.frame
+DE_info = DE_info %>% data.frame
+
+# GO Neuronal annotations
+GO_annotations = read.csv('./../../FirstYearReview/Data/GO_annotations/genes_GO_annotations.csv')
+GO_neuronal = GO_annotations %>% filter(grepl('neuron', go_term)) %>% 
+              mutate('ID'=as.character(ensembl_gene_id)) %>% 
+              dplyr::select(-ensembl_gene_id) %>% distinct(ID) %>%
+              mutate('Neuronal'=1)
+
+
+# SFARI Genes
+SFARI_genes = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes = SFARI_genes[!duplicated(SFARI_genes$ID) & !is.na(SFARI_genes$ID),]
+
+
+# Update DE_info with SFARI and Neuronal information
+DE_info = DE_info %>% mutate('ID'=rownames(.)) %>% left_join(SFARI_genes, by='ID') %>% 
+  mutate(`gene-score`=ifelse(is.na(`gene-score`), 'None', `gene-score`)) %>%
+  distinct(ID, .keep_all = TRUE) %>% left_join(GO_neuronal, by='ID') %>%
+  mutate(Neuronal=ifelse(is.na(Neuronal), 0, Neuronal)) %>%
+  mutate(gene.score=ifelse(`gene-score`=='None' & Neuronal==1, 'Neuronal', `gene-score`), significant=padj<0.05 & !is.na(padj))
+
+
+# Get colors from the ggplot palette
+gg_colour_hue = function(n) {
+  hues = seq(15, 375, length = n+1)
+  pal = hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+rm(GO_annotations)
+```
+<br>
+
+# Perform Clustering
+
+Pipeline:
+
+- Using biweight correlation as correlation metric
+
+- Elevating the correlation matrix to the best power for scale-free topology
+
+- Using a Topological Overlap Matrix as distance matrix
+
+- Performing hierarchical clustering (using average linkage hclust(method='average'))
+
+- Extracting clusters using the Dynamic Tree brach cutting algorithm from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+- Merging similar clusters using Module Eigengenes
+
+- Saving all results so we can decide which to use later
+
+<br><br>
+
+---
+### Define a gene co-expression similarity
+
+Using Biweight midcorrelation because it's more robust to outliers than regular correlation or Mutual Information score
+
+Correcting the correlation matrix from $s \in [-1,1]$ to $s \in [0,1]$. Two methods are proposed: $s_{ij}=|bw(i,j)|$ and $s_{ij}=\frac{1+bw(i,j)}{2}$
+
+  -Using $s_{ij}=\frac{1+bw(i,j)}{2}$, the strongest negative correlations (-1) get mapped to 0 (no correlation) and the zero correlated genes get mapped to the average correlation (0.5), which I don't think makes much sense
+  
+  -Using $s_{ij}=|bw(i,j)|$ we lose the direction of the correlation, but at least we maintain the magnitude of the correlation of all the genes. Decided to use this one
+
+<br><br>
+
+---
+
+### Define a family of adjacency functions
+
+- Sigmoid function: $a(i,j)=sigmoid(s_{ij}, \alpha, \tau_0) \equiv \frac{1}{1+e^{-\alpha(s_{ij}-\tau_0)}}$
+
+- Power adjacency function: $a(i,j)=power(s_{ij}, \beta) \equiv |S_{ij}|^\beta$
+
+Chose power adjacency function over the sigmoid function because it has only one parameter to adjust and both methods are supposed to lead to very similar results if the parameters are chosen with the scale-free topology criterion.
+
+### Choosing a parameter value
+
+Following the **scale-free topology criterion** because metabolic networks have been found to display approximate scale free topology
+
+1. Only consider those parameter values that lead to a network satisfying scale-free topology at least approximately, e.g. signed $R^2 > 0.80$
+
+**Note:** Including non-integer powers in the parameters. Integer powers are usually used for this but there's no reason why you can't use a non-integer power and you can get a lower power vector that is above the 0.8 threshold so you don't affect the data that much
+```{r}
+allowWGCNAThreads()
+best_power = datExpr %>% t %>% pickSoftThreshold(powerVector = seq(1,5,0.2), RsquaredCut=0.8)
+
+cat(paste0('Best power for scale free topology: ', best_power$powerEstimate))
+```
+
+### Create Adjacency Matrix
+
+I was originally using an unsigned (|cor|) adjacency function (because originally there were only signed and unsigned options), but there is now a third option, called signed hybrid (max(0,cor)), which Peter Langfelder recommends in his blog entry [Signed or Unsigned: which network type is preferable? ](https://peterlangfelder.com/2018/11/25/signed-or-unsigned-which-network-type-is-preferable/) where he says that:
+
+- It is important to know where node profiles go up and where they go down, and mixing negatively correlated nodes together necessarily mixes the two directions together
+
+- Negatively correlated genes tend to come from biologically very different categories (and by using and unsigned adjacency function you are grouping themm all together)
+
+So I switched to this one.
+
+<br>
+
+Using biweight midcorrelation instead of regular correlation because it's more robust to outliers
+
+```{r create_adj_mat}
+S_sft = datExpr %>% t %>% adjacency(type='signed hybrid', power=best_power$powerEstimate, corFnc='bicor')
+```
+<br><br>
+
+---
+
+## Defining a measure of node dissimilarity
+
+Using topological overlap dissimilarity measure because it has been found to result in biologically meaningful modules
+
+```{r}
+TOM = S_sft %>% TOMsimilarity
+dissTOM = 1-TOM
+
+rownames(dissTOM) = rownames(S_sft)
+colnames(dissTOM) = colnames(S_sft)
+
+rm(S_sft, TOM)
+```
+
+<br><br>
+
+---
+
+## Identifying gene modules
+
+Using hierarchical clustering using average linkage on the TOM-based dissimilarity matrix
+
+```{r, fig.width=10}
+dend = dissTOM %>% as.dist %>% hclust(method='average')
+plot(dend, hang=0, labels=FALSE)
+```
+
+
+Instead of using a fixed height to cut the dendrogram into clusters, using a dynamic branch cutting approach taken from [Dynamic Tree Cut: in-depth description, tests and applications](https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/BranchCutting/Supplement.pdf)
+
+**Dynamic Tree Cut:** top-down algorithm relying only on the dendrogram and respecting the order of the clustered objects on it. This method is less sensitive to parameter choice but also less flexible and it performed better in our previous experiments **but** when using it on this dataset it left most genes without a cluster, so tried doing it also with the Dynamic Hybrid algorithm
+
+ **Dynamic Hybrid Cut:** builds the clusters from bottom up. In addition to information from the dendrogram, it utilizes dissimilarity information among the objects. Seems to me that relies on too many heuristics and has too many parameters to tune. Ran it with the default settings
+ 
+### Dynamic Tree Cut Algorithm
+
+**MOST** of genes (83%) are left without a cluster! (With Gandal's dataset it was less than half and it was still bad)
+
+```{r}
+modules = cutreeDynamic(dend, method = 'tree', minClusterSize = 10)
+
+table(modules)
+
+# Note: The modules are ordered as in the rows in datExpr
+```
+
+#### Merging similar modules
+
+```{r merge_modules_dynamic_tree, fig.width=10}
+# Calculate eigengenes
+MEList = datExpr %>% t %>% moduleEigengenes(colors = modules)
+MEs = MEList$eigengenes
+
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs)
+
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = 'average')
+
+METree %>% as.dendrogram %>% plot(main = 'Clustering of module eigengenes', leaflab = 'none')
+abline(h=1, col='#0099cc')
+abline(h=0.6, col='#009999')
+abline(h=0.3, col='#99cc00')
+
+merge_top = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 1)
+
+merge_similar = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 0.6)
+
+merge_most_similar = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 0.3)
+
+rm(MEList, MEs, MEDiss, METree)
+```
+
+Only the genes farthest away from the root of the tree are assigned a module. This is not very useful
+```{r plot_dend_dynamic_tree, warning=FALSE, fig.width=10}
+
+get_mod_colours = function(mods){
+  
+  n = length(unique(mods))-1
+  set.seed(123) ; rand_order = sample(1:n)
+  mod_colors = c('gray',gg_colour_hue(n)[rand_order])
+  names(mod_colors) = mods %>% table %>% names
+  
+  return(mod_colors)
+}
+
+module_colors = get_mod_colours(modules)
+merged_sim_module_colors = get_mod_colours(merge_most_similar$colors)
+merged_module_colors = get_mod_colours(merge_similar$colors)
+top_module_colors = get_mod_colours(merge_top$colors)
+
+dend_colors = data.frame('ID' = rownames(datExpr),
+                         'OriginalModules' = module_colors[as.character(modules)],
+                         'MostSimModules' = merged_sim_module_colors[as.character(merge_most_similar$colors)],
+                         'MergedModules' = merged_module_colors[as.character(merge_similar$colors)],
+                         'TopModules' = top_module_colors[as.character(merge_top$colors)])
+
+dend %>% as.dendrogram(hang=0) %>% plot(ylim=c(min(dend$height),1), leaflab='none')
+colored_bars(colors=dend_colors[dend$order,-1])
+
+rm(module_colors, merged_sim_module_colors, merged_module_colors, top_module_colors)
+```
+
+```{r}
+modules_dynamic_tree = dend_colors
+
+rm(dend_colors)
+```
+
+
+### Dynamic Hybrid Cut Algorithm
+
+```{r}
+modules = cutreeDynamic(dend, minClusterSize = 10, distM = dissTOM)
+
+table(modules)
+```
+
+#### Merging similar modules
+
+```{r merge_modules_dynamic_hybrid, fig.width=10}
+
+# Calculate eigengenes
+MEList = datExpr %>% t %>% moduleEigengenes(colors = modules)
+MEs = MEList$eigengenes
+
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs)
+
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = 'average')
+
+METree %>% as.dendrogram %>% plot(main = 'Clustering of module eigengenes', leaflab = 'none')
+abline(h=1, col='#0099cc')
+abline(h=0.5, col='#009999')
+abline(h=0.3, col='#99cc00')
+
+merge_top = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 1)
+
+merge_similar = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 0.5)
+
+merge_most_similar = datExpr %>% t %>% mergeCloseModules(modules, cutHeight = 0.3)
+
+rm(MEList, MEs, MEDiss, METree)
+```
+
+Classification is quite noisy with respect to the dendrogram, but that isn't necessarily a bad thing, as Peter Langfelder explains in [this blog post ](https://peterlangfelder.com/2018/12/30/why-wgcna-modules-dont-always-agree-with-the-dendrogram/) from [Insights from a Million Correlations](https://peterlangfelder.com/articles/)
+
+```{r plot_dend_dynamic_hybrid, warning=FALSE, fig.width=10}
+module_colors = get_mod_colours(modules)
+merged_sim_module_colors = get_mod_colours(merge_most_similar$colors)
+merged_module_colors = get_mod_colours(merge_similar$colors)
+top_module_colors = get_mod_colours(merge_top$colors)
+
+dend_colors = data.frame('ID' = rownames(datExpr),
+                         'OriginalModules' = module_colors[as.character(modules)],
+                         'MostSimModules' = merged_sim_module_colors[as.character(merge_most_similar$colors)],
+                         'MergedModules' = merged_module_colors[as.character(merge_similar$colors)],
+                         'TopModules' = top_module_colors[as.character(merge_top$colors)])
+
+dend %>% as.dendrogram(hang=0) %>% plot(ylim=c(min(dend$height),1), leaflab='none')
+colored_bars(colors=dend_colors[dend$order,-1])
+
+rm(module_colors, merged_module_colors, top_module_colors)
+```
+
+```{r}
+modules_dynamic_hybrid = dend_colors
+
+rm(dend_colors)
+```
+
+---
+
+Save clusterings file
+```{r}
+colnames(modules_dynamic_tree) = c('ID','DynamicTree', 'DynamicTreeMergedSmall', 'DynamicTreeMerged', 'DynamicTreeTop')
+colnames(modules_dynamic_hybrid) = c('ID','DynamicHybrid', 'DynamicHybridMergedSmall', 'DynamicHybridMerged', 'DynamicHybridTop')
+
+modules = modules_dynamic_tree %>% left_join(modules_dynamic_hybrid, by='ID')
+
+write.csv(modules, file='./../Data/clusters.csv', row.names=FALSE)
+```
+<br><br>
+
+---
+
+#### Session info
+```{r print_session_info}
+sessionInfo()
+```
+<br><br>
+
+
