@@ -21,7 +21,7 @@ Load old and new SFARI scores
 ```{r, warning=FALSE, message=FALSE}
 
 # Old SFARI Genes scoring
-SFARI_genes_old = read_csv('./../../../PhD-Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
+SFARI_genes_old = read_csv('./../../../Models/FirstPUModel/Data/SFARI/SFARI_genes_08-29-2019_with_ensembl_IDs.csv')
 SFARI_genes_old = SFARI_genes_old[!duplicated(SFARI_genes_old$`gene-symbol`),]
 
 # New SFARI Genes scoring
@@ -179,7 +179,7 @@ In order to simplify the gene scoring system we have decided to reduce the numbe
 
 <br>
 
-**My Notes:**
+**My Notes**
 
 - The mapping between scores is not as clean as it is said to be in the announcement (1st alluvial diagram). Perhaps there was an update in the scores after the version I have and that's where the noise is coming from? *It would be interesting to see how much the scores change from one update from another, but I cannot find the different versions of the scores on the website*
 
@@ -193,11 +193,13 @@ In order to simplify the gene scoring system we have decided to reduce the numbe
 
 <br>
 
+***
+
 ## Visualisations of the changes
 
 <br>
 
-Alluvial diagram to study the changes in scores
+#### Alluvial diagram to study the changes in scores
 
 - The new score 1 seems to come from a mix of scores 1, 2, 3 and some new
 
@@ -210,22 +212,22 @@ Alluvial diagram to study the changes in scores
 ```{r}
 # Create connection data frame with a list of flows and their intensity
 summary_info = SFARI_genes %>% group_by(gene_score_old, gene_score_new) %>% tally %>% 
-               replace_na(list(gene_score_old='None', gene_score_new='None')) %>%
+               replace_na(list(gene_score_old='Not included', gene_score_new='Not included')) %>%
                ungroup(gene_score_old, gene_score_new)
 
 summary_info %>% ggplot(aes(y=n, axis1=gene_score_old, axis2=gene_score_new)) + 
                  geom_alluvium(discern = TRUE) + 
-                 geom_stratum(discern = TRUE, color = 'white', 
+                 geom_stratum(discern = TRUE, color = 'white', width = 0.2, 
                               fill=c('#999999','#59B9C9','#62CCA6','#8CC83F','#E8E328','#FFB100','#FF7631',
                                      '#999999','#E8E328','#FFB100','#FF7631')) + 
                  geom_text(stat = 'stratum', discern = FALSE, infer.label = TRUE, color='white') +
-                 scale_x_discrete(limits=c('Old','New')) + ylab('Number of Genes') + 
+                 scale_x_discrete(limits=c('Old','New'), expand=c(0, 0)) + ylab('Number of Genes') + 
                  ggtitle('Changes in SFARI scores by gene') + theme_minimal()
 ```
 
 <br>
 
-Alluvial diagram to study the changes in the syndromic tag
+#### Alluvial diagram to study the changes in the syndromic tag
 
 - Around half of the genes that were previously labeled as syndromic are not longer labelled
 
@@ -234,18 +236,58 @@ Alluvial diagram to study the changes in the syndromic tag
 - Very big differences for having no change in the tag's definition ...
 
 ```{r}
-# Create connection data frame with a list of flows and their intensity
 summary_info = SFARI_genes %>% group_by(syndromic_old, syndromic_new) %>% tally %>% 
                replace_na(list(syndromic_old='None', syndromic_new='None')) %>%
-               ungroup(syndromic_old, syndromic_new)
+               ungroup(syndromic_old, syndromic_new) %>%
+               mutate(syndromic_old_ID = as.numeric(as.factor(syndromic_old))-1, 
+                      syndromic_new_ID = as.numeric(as.factor(syndromic_new))+2)
 
-summary_info %>% ggplot(aes(y=n, axis1=syndromic_old, axis2=syndromic_new)) + 
-                 geom_alluvium(discern = TRUE) + 
-                 geom_stratum(discern = TRUE, color = 'white',
-                              fill=c('#999999', '#dc2641', '#00b3b3', '#999999', '#dc2641', '#00b3b3')) + 
-                 geom_text(stat = 'stratum', discern = FALSE, infer.label = TRUE, color='white') +
-                 scale_x_discrete(limits=c('Old','New')) + ylab('Number of Genes') + 
-                 ggtitle('Changes in SFARI syndromic tag by gene') + theme_minimal()
+plot_ly(type = 'sankey',
+        node = list(label = rep(c('Not Syndromic', 'Syndromic' ,'Not included'),2),
+                    color = rep(c('#00b3b3','#dc2641','#999999'),2),
+                    pad = 5,
+                    thickness = 40,
+                    line = list(width = 0)),
+        link = list(source = summary_info$syndromic_old_ID,
+                    target = summary_info$syndromic_new_ID,
+                    value =  summary_info$n)
+  ) %>%
+layout(title = 'Changes in SFARI syndromic tag by gene', font = list(size = 10))
 ```
 
+<br><br>
 
+***
+
+### Alluvial plot for SFARI scores using plot_ly
+
+```{r}
+library(plotly)
+
+summary_info = SFARI_genes %>% group_by(gene_score_old, gene_score_new) %>% tally %>% 
+               replace_na(list(gene_score_old='None', gene_score_new='None')) %>%
+               ungroup(gene_score_old, gene_score_new) %>%
+               mutate(gene_score_old_ID = as.numeric(as.factor(gene_score_old))-1, 
+                      gene_score_new_ID = as.numeric(as.factor(gene_score_new))+6)
+
+### Doesn't work!!!
+#pos_x = c(rep(0,7), rep(1,4))
+#pos_y_old = cumsum(as.vector(table(SFARI_genes$gene_score_old, useNA='ifany')))/nrow(SFARI_genes)
+#pos_y_old = pos_y_old - min(pos_y_old)
+#pos_y_new = cumsum(as.vector(table(SFARI_genes$gene_score_new, useNA='ifany')))/nrow(SFARI_genes)
+#pos_y_new = pos_y_new - min(pos_y_new)
+
+plot_ly(type = 'sankey', arrangement = 'snap',
+        node = list(label = c('1','2','3','4','5','6','Not included','1','2','3','Not included'),
+                    color = SFARI_colour_hue(c(1:7,1:3,7)),
+                    #x = pos_x,
+                    #y = c(pos_y_old, pos_y_new),
+                    pad = 5,
+                    thickness = 40,
+                    line = list(width = 0)),
+        link = list(source = summary_info$gene_score_old_ID,
+                    target = summary_info$gene_score_new_ID,
+                    value =  summary_info$n)
+  ) %>%
+layout(title = 'Changes in SFARI scores by gene', font = list(size = 10))
+```
