@@ -35,7 +35,7 @@ library(DESeq2)
 
 Load preprocessed dataset (preprocessing code in 19_11_14_data_preprocessing.Rmd)
 ```{r load_dataset, echo=TRUE, message=FALSE, warning=FALSE}
-# Gandal dataset
+# Gupta dataset
 load('./../Data/preprocessed_data.RData')
 datExpr = datExpr %>% data.frame
 DE_info = DE_info %>% data.frame
@@ -318,7 +318,7 @@ rm(pca)
 
 Plotting the mean expression by group in Gandal's dataset there seemed to exist underlying distributions, so we would use GMM to separate them, but everything seems very homogeneous here, so this doesn't seem to be necessary. (If we do it anyway we can see that they still cluster by mean expression, which makes sense since it explains the majority of the variance of the genes)
 
-- **Under-expressed ASD genes tend to have a higher mean expression than over-expressed ones (I would have thought this would be the opposite way)**
+- Under-expressed ASD genes tend to have a higher mean expression than over-expressed ones (same as with Gandal's data)
 ```{r, fig.width=10, warning=FALSE}
 gg_colour_hue = function(n) {
   hues = seq(15, 375, length = n + 1)

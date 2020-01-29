@@ -40,7 +40,6 @@ rm(getinfo, mart)
 datGenes = datGenes %>% mutate('meanExpr' = rowMeans(datExpr[,-1])) %>% 
            left_join(pubmed_counts, by=c('external_gene_id'='Gene')) %>% na.omit
 ```
-*Perhaps later I should remove the entries with gene name 5s_rRNA
 
 #### Gene Expression
 
@@ -52,12 +51,24 @@ ggplotly(datGenes %>% ggplot(aes(meanExpr+1)) + geom_density(color='#0099cc', fi
 
 #### Number of Publications
 
-Very heavy right tail too
+Genes with the highest number of publications have names like MICE, LARGE, IMPACT, ACHE, SET, PIGS, NHS ... so I think most of thir related publications are not about those actual genes... 
+
 ```{r publications_distr}
 summary(datGenes$Count)
 
+cat(paste0(sum(datGenes$Count==0), ' genes have 0 publications (~', round(100*mean(datGenes$Count==0)), '%) (that\'s a lot!)'))
+
 datGenes %>% arrange(desc(Count)) %>% distinct(external_gene_id, .keep_all=TRUE) %>% 
              head(20) %>% kable(caption='Top 20 genes by number of publications')
+```
+
+I'm going to remove all top genes until NHS (it looks like the TNF publications are actually about that gene) and then some other genes that have high counts and their names are known words (COPE, REST, MAX, ENG, SHE, CAT, COMP, CAMP, BAD, COIL, POLE, ACE, GRASP, CAST, ...)
+
+```{r}
+problematic_gene_names = c('COPE','REST','MAX','ENG','SHE','CAT','COMP','CAMP','BAD','COIL','POLE','ACE',
+                           'GRASP','CAST','SON','CLOCK','ITCH','STAR','WARS','MARS','MARCO','ATM','CARS')
+
+datGenes = datGenes %>% filter(Count<=167834 & !external_gene_id %in% problematic_gene_names)
 
 ggplotly(datGenes %>% ggplot(aes(Count+1)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
          scale_x_log10() + theme_minimal())
@@ -66,26 +77,74 @@ ggplotly(datGenes %>% ggplot(aes(Count+1)) + geom_density(color='#0099cc', fill=
 #### Relation between publications and mean expression
 
 There is a positive relation between these two variables and the correlation is quite high **but** only when transforming to logarithmic scale the variables
+
+- The highest expressed gene is TNF with 167K articles
+
+* R^2 is the square of the correlation coefficient, so with one calculation we can compute both
 ```{r publications_vs_expression, message=FALSE}
-datGenes %>% ggplot(aes(meanExpr+1, Count+1)) + geom_point(color='#0099cc', alpha=0.1) +
+corr = cor(log10(datGenes$meanExpr+1), log10(datGenes$Count+1))
+
+datGenes %>% ggplot(aes(meanExpr+1, Count+1)) + geom_point(color='#0099cc', alpha=0.03) +
              geom_smooth(color='gray', alpha=0.3) + scale_x_log10() + scale_y_log10() + 
-             ggtitle(paste0('Cor=(' ,cor(log10(datGenes$meanExpr+1), log10(datGenes$Count+1)),')')) + theme_minimal()
+             ggtitle(paste0('Cor = (' ,round(corr,4),') R^2 = (', round(corr^2,4),')')) + theme_minimal() + coord_fixed()
 ```
 
-Differentiating protein coding genes from the rest, the correlation decreases when separating the genes (I would have expected the opposite)
+Differentiating protein coding genes from the rest, the correlation decreases when separating the genes, it seems like part of the reason why the correlation was so high because is because it was combining two behaviours, non-protein-coding genes with low levels of expression and low numbers of papers, and protein-coding genes, with higher levels of expression and of publications.
 
-*The red stripes on the plot correspond to non coding genes that have many ensembl IDs, like Y_RNA, snoU13, U3, or SNORD112
+- The red stripes on the plot correspond to non coding genes that have many ensembl IDs, like Y_RNA, snoU13, U3, or SNORD112
+
+- The non coding gene with the largest number of publications is the pseudogene MICE
 ```{r, message=FALSE}
+
+cat(paste0(round(100*(sum(datGenes$gene_biotype=='protein_coding' & datGenes$Count==0)/sum(datGenes$gene_biotype=='protein_coding'))),
+           '% of the protein coding genes have zero publications'))
+
+corr1 = cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype=='protein_coding'],
+            log10(datGenes$Count+1)[datGenes$gene_biotype=='protein_coding'])
+corr2 = cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype!='protein_coding'],
+            log10(datGenes$Count+1)[datGenes$gene_biotype!='protein_coding'])
 datGenes %>% mutate(protein_coding = gene_biotype=='protein_coding') %>% 
              ggplot(aes(meanExpr+1, Count+1, color=protein_coding)) + 
-             geom_point(alpha=0.1) + geom_smooth() + 
+             geom_point(alpha=0.03) + geom_smooth() + 
              scale_x_log10() + scale_y_log10() + 
-             ggtitle(paste0('CorPC=(',
-                            cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype=='protein_coding'],
-                                log10(datGenes$Count+1)[datGenes$gene_biotype=='protein_coding']),'), ',
-                            'CorNPC=(',
-                            cor(log10(datGenes$meanExpr+1)[datGenes$gene_biotype!='protein_coding'],
-                                log10(datGenes$Count+1)[datGenes$gene_biotype!='protein_coding']),')')) +
-             theme_minimal()
+             ggtitle(paste0('Cor PC=', round(corr1,4), ', ', 'Cor nPC=', round(corr2,4))) +
+             theme_minimal() + coord_fixed()
+
+rm(corr1, corr2)
 ```
 
+### Focusing on protein coding genes
+
+```{r, message=FALSE}
+
+datGenesPC = datGenes %>% filter(gene_biotype=='protein_coding') %>% mutate(meanExpr_l10 = log10(meanExpr+1),
+                                                                            Count_l10 = log10(Count+1))
+
+corr = cor(datGenesPC$meanExpr_l10, datGenesPC$Count_l10)
+
+datGenesPC %>% ggplot(aes(meanExpr+1, Count+1)) + geom_point(alpha=0.03, color='#0099cc') + geom_smooth(color='gray') + 
+               scale_x_log10() + scale_y_log10() + 
+               ggtitle(paste0('Correlation = ',round(corr,4),', R^2 = ', round(corr^2,4))) +
+               theme_minimal() + coord_fixed()
+
+```
+
+Filtering genes with the lowest levels of expression
+
+```{r, fig.height=3, fig.width=7.4}
+
+datGenesPC %>% ggplot(aes(meanExpr+1)) + geom_density(color='#0099cc', fill='#0099cc', alpha=0.3) +
+               geom_vline(xintercept=10, color='gray') + scale_x_log10() + theme_minimal()
+
+datGenesPC = datGenesPC %>% filter(meanExpr>=9)
+```
+
+
+```{r, message=FALSE}
+corr = cor(datGenesPC$meanExpr_l10, datGenesPC$Count_l10)
+
+datGenesPC %>% ggplot(aes(meanExpr+1, Count+1)) + geom_point(alpha=0.07, color='#0099cc') + geom_smooth(color='gray') + 
+               scale_x_log10() + scale_y_log10() + 
+               ggtitle(paste0('Correlation = ',round(corr,4),', R^2 = ', round(corr^2,4))) +
+               theme_minimal() + coord_fixed()
+```
